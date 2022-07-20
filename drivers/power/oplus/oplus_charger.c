@@ -12339,6 +12339,7 @@ static int oplus_chg_gauge_update_check(struct oplus_chg_chip *chip, bool ffc_st
 #define GAUGE_INFO_MAX_SIZE 1024
 static void oplus_chg_print_log(struct oplus_chg_chip *chip)
 {
+#if 0
 	static long update_reg_jiffies;
 	char buf[GAUGE_INFO_MAX_SIZE] = {0};
 	int rc;
@@ -12438,6 +12439,7 @@ static void oplus_chg_print_log(struct oplus_chg_chip *chip)
 		oplus_pps_print_log();
 		oplus_ufcs_print_log();
 	}
+#endif
 }
 
 static int comm_info_dump_log_data(char *buffer, int size, void *dev_data)
