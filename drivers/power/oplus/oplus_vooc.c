@@ -40,13 +40,8 @@
 #define OPLUS_VOOC_BATT_CURVE_CURR_DEFAULT		100
 
 extern int charger_abnormal_log;
-extern int enable_charger_log;
-#define vooc_xlog_printk(num, fmt, ...)                                                                                \
-	do {                                                                                                           \
-		if (enable_charger_log >= (int)num) {                                                                  \
-			printk(KERN_NOTICE pr_fmt("[OPLUS_CHG][%s]" fmt), __func__, ##__VA_ARGS__);                    \
-		}                                                                                                      \
-	} while (0)
+
+#define vooc_xlog_printk(num, ...) chg_debug(__VA_ARGS__)
 
 struct vooc_full_limit_curr_table {
 	int volt_diff;
