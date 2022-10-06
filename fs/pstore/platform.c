@@ -561,8 +561,9 @@ int pstore_register(struct pstore_info *psi)
 	char *new_backend;
 
 	if (backend && strcmp(backend, psi->name)) {
-		pr_warn("ignoring unexpected backend '%s'\n", psi->name);
-		return -EPERM;
+		pr_warn("backend '%s' already in use: ignoring '%s'\n",
+			backend, psi->name);
+		return -EBUSY;
 	}
 
 	/* Sanity check flags. */
