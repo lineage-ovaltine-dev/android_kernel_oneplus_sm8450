@@ -509,6 +509,29 @@ config KINECTICS_XR_NORDIC
 	   this also parses the gpios and interrupts from device tree and sets
 	   the gpios and interrupt handler for handling the interrupt.
 
+#ifdef OPLUS_FEATURE_RF_CABLE_DETECT
+config OPLUS_RF_CABLE_MONITOR
+    tristate "OPLUS rf cable monitor system"
+    depends on OF
+    select PINMUX
+    default n
+    help
+      Say Y here to enable OPLUS rf cable monitor system support
+#endif /* OPLUS_FEATURE_RF_CABLE_DETECT */
+
+#ifdef OPLUS_FEATURE_LMVIBRATOR
+config AW8697_HAPTIC
+	tristate "Haptic driver for awinic aw8697 series"
+	depends on I2C
+	help
+	This option enables support for aw8697 series Haptic Driver.
+
+config HAPTIC_FEEDBACK
+    tristate "Haptic driver feedback for awinic aw8697 series"
+    help
+      This option enables support for aw8697 series Haptic Driver Feedback.
+#endif /* OPLUS_FEATURE_LMVIBRATOR */
+
 source "drivers/misc/rtimd-i2c/Kconfig"
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
@@ -527,4 +550,6 @@ source "drivers/misc/habanalabs/Kconfig"
 source "drivers/misc/isl97900_led/Kconfig"
 source "drivers/misc/uacce/Kconfig"
 source "drivers/misc/hdcp/Kconfig"
+source "drivers/misc/tri_state_key/Kconfig"
+source "drivers/misc/cs_press/Kconfig"
 endmenu
