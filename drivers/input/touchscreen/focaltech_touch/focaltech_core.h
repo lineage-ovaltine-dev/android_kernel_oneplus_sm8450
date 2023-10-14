@@ -287,10 +287,10 @@ struct fts_ts_data {
 	struct early_suspend early_suspend;
 #endif
 
+	const char *touch_environment;
 #ifdef CONFIG_FTS_TRUSTED_TOUCH
 	struct trusted_touch_vm_info *vm_info;
 	struct mutex fts_clk_io_ctrl_mutex;
-	const char *touch_environment;
 	struct completion trusted_touch_powerdown;
 	struct clk *core_clk;
 	struct clk *iface_clk;
