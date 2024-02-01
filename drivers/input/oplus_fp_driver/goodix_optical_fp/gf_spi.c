@@ -104,23 +104,6 @@ static DEFINE_MUTEX(device_list_lock);
 static struct wake_lock fp_wakelock;
 static struct wake_lock gf_cmd_wakelock;
 struct gf_dev gf;
-struct gf_key_map maps[] = {
-    {EV_KEY, GF_KEY_INPUT_HOME},
-    {EV_KEY, GF_KEY_INPUT_MENU},
-    {EV_KEY, GF_KEY_INPUT_BACK},
-    {EV_KEY, GF_KEY_INPUT_POWER},
-#if defined(SUPPORT_NAV_EVENT)
-    {EV_KEY, GF_NAV_INPUT_UP},
-    {EV_KEY, GF_NAV_INPUT_DOWN},
-    {EV_KEY, GF_NAV_INPUT_RIGHT},
-    {EV_KEY, GF_NAV_INPUT_LEFT},
-    {EV_KEY, GF_KEY_INPUT_CAMERA},
-    {EV_KEY, GF_NAV_INPUT_CLICK},
-    {EV_KEY, GF_NAV_INPUT_DOUBLE_CLICK},
-    {EV_KEY, GF_NAV_INPUT_LONG_PRESS},
-    {EV_KEY, GF_NAV_INPUT_HEAVY},
-#endif
-};
 
 static int gf_opticalfp_irq_handler(struct fp_underscreen_info *tp_info);
 #if IS_ENABLED(CONFIG_DRM_PANEL_NOTIFY_FINGERPRINT)
@@ -343,44 +326,6 @@ static int gfspi_ioctl_clk_uninit(struct gf_dev *data)
 }
 #endif
 
-static void gf_kernel_key_input(struct gf_dev *gf_dev, struct gf_key *gf_key)
-{
-    uint32_t key_input = 0;
-    if (GF_KEY_HOME == gf_key->key)
-    {
-        key_input = GF_KEY_INPUT_HOME;
-    }
-    else if (GF_KEY_POWER == gf_key->key)
-    {
-        key_input = GF_KEY_INPUT_POWER;
-    }
-    else if (GF_KEY_CAMERA == gf_key->key)
-    {
-        key_input = GF_KEY_INPUT_CAMERA;
-    }
-    else
-    {
-        /* add special key define */
-        key_input = gf_key->key;
-    }
-    pr_info("%s: received key event[%d], key=%d, value=%d\n",
-            __func__, key_input, gf_key->key, gf_key->value);
-
-    if ((GF_KEY_POWER == gf_key->key || GF_KEY_CAMERA == gf_key->key) && (gf_key->value == 1))
-    {
-        input_report_key(gf_dev->input, key_input, 1);
-        input_sync(gf_dev->input);
-        input_report_key(gf_dev->input, key_input, 0);
-        input_sync(gf_dev->input);
-    }
-
-    if (GF_KEY_HOME == gf_key->key)
-    {
-        input_report_key(gf_dev->input, key_input, gf_key->value);
-        input_sync(gf_dev->input);
-    }
-}
-
 static irqreturn_t gf_irq(int irq, void *handle)
 {
 #if defined(GF_NETLINK_ENABLE)
@@ -443,7 +388,6 @@ static long gf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     int retval = 0;
     u8 netlink_route = NETLINK_TEST;
     struct gf_ioc_chip_info info;
-    struct gf_key gf_key;
 
     if (_IOC_TYPE(cmd) != GF_IOC_MAGIC) {
         return -ENODEV;
@@ -497,16 +441,6 @@ static long gf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         case GF_IOC_RESET:
             pr_info("%s GF_IOC_RESET. \n", __func__);
             gf_hw_reset(gf_dev, 10);
-            break;
-        case GF_IOC_INPUT_KEY_EVENT:
-            if (copy_from_user(&gf_key, (struct gf_key *)arg, sizeof(struct gf_key)))
-            {
-                pr_info("Failed to copy input key event from user to kernel\n");
-                retval = -EFAULT;
-                break;
-            }
-
-            gf_kernel_key_input(gf_dev, &gf_key);
             break;
         case GF_IOC_ENABLE_SPI_CLK:
             pr_debug("%s GF_IOC_ENABLE_SPI_CLK\n",  __func__);
@@ -887,7 +821,6 @@ static int gf_probe(struct platform_device *pdev)
     int status = -EINVAL;
     unsigned long minor;
     int boot_mode = 0;
-    int i;
 
     /* Initialize the driver data */
     INIT_LIST_HEAD(&gf_dev->device_entry);
@@ -941,9 +874,6 @@ static int gf_probe(struct platform_device *pdev)
             status = -ENOMEM;
             goto error_dev;
         }
-        for (i = 0; i < ARRAY_SIZE(maps); i++)
-            input_set_capability(gf_dev->input, maps[i].type, maps[i].code);
-
         gf_dev->input->name = GF_INPUT_NAME;
         status = input_register_device(gf_dev->input);
         if (status)
