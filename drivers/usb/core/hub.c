@@ -31,7 +31,6 @@
 #include <linux/pm_qos.h>
 #include <linux/kobject.h>
 
-#include <linux/bitfield.h>
 #include <linux/uaccess.h>
 #include <asm/byteorder.h>
 
@@ -46,8 +45,8 @@
 #define USB_VENDOR_TEXAS_INSTRUMENTS		0x0451
 #define USB_PRODUCT_TUSB8041_USB3		0x8140
 #define USB_PRODUCT_TUSB8041_USB2		0x8142
-#define HUB_QUIRK_CHECK_PORT_AUTOSUSPEND	0x01
-#define HUB_QUIRK_DISABLE_AUTOSUSPEND		0x02
+#define HUB_QUIRK_CHECK_PORT_AUTOSUSPEND	BIT(0)
+#define HUB_QUIRK_DISABLE_AUTOSUSPEND		BIT(1)
 
 #define USB_TP_TRANSMISSION_DELAY	40	/* ns */
 #define USB_TP_TRANSMISSION_DELAY_MAX	65535	/* ns */
@@ -116,7 +115,6 @@ EXPORT_SYMBOL_GPL(ehci_cf_port_reset_rwsem);
 #define HUB_DEBOUNCE_STEP	  25
 #define HUB_DEBOUNCE_STABLE	 100
 
-static void hub_release(struct kref *kref);
 static int usb_reset_and_verify_device(struct usb_device *udev);
 static int hub_port_disable(struct usb_hub *hub, int port1, int set_state);
 static bool hub_port_warm_reset_required(struct usb_hub *hub, int port1,
@@ -678,14 +676,14 @@ static void kick_hub_wq(struct usb_hub *hub)
 	 */
 	intf = to_usb_interface(hub->intfdev);
 	usb_autopm_get_interface_no_resume(intf);
-	kref_get(&hub->kref);
+	hub_get(hub);
 
 	if (queue_work(hub_wq, &hub->events))
 		return;
 
 	/* the work has already been scheduled */
 	usb_autopm_put_interface_async(intf);
-	kref_put(&hub->kref, hub_release);
+	hub_put(hub);
 }
 
 void usb_kick_hub_wq(struct usb_device *hdev)
@@ -1053,7 +1051,7 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
 			goto init2;
 		goto init3;
 	}
-	kref_get(&hub->kref);
+	hub_get(hub);
 
 	/* The superspeed hub except for root hub has to use Hub Depth
 	 * value as an offset into the route string to locate the bits
@@ -1301,7 +1299,7 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
 		device_unlock(&hdev->dev);
 	}
 
-	kref_put(&hub->kref, hub_release);
+	hub_put(hub);
 }
 
 /* Implement the continuations for the delays above */
@@ -1717,6 +1715,16 @@ static void hub_release(struct kref *kref)
 	kfree(hub);
 }
 
+void hub_get(struct usb_hub *hub)
+{
+	kref_get(&hub->kref);
+}
+
+void hub_put(struct usb_hub *hub)
+{
+	kref_put(&hub->kref, hub_release);
+}
+
 static unsigned highspeed_hubs;
 
 static void hub_disconnect(struct usb_interface *intf)
@@ -1763,7 +1771,7 @@ static void hub_disconnect(struct usb_interface *intf)
 	if (hub->quirk_disable_autosuspend)
 		usb_autopm_put_interface(intf);
 
-	kref_put(&hub->kref, hub_release);
+	hub_put(hub);
 }
 
 static bool hub_descriptor_is_sane(struct usb_host_interface *desc)
@@ -2367,17 +2375,25 @@ static int usb_enumerate_device_otg(struct usb_device *udev)
 			}
 		} else if (desc->bLength == sizeof
 				(struct usb_otg_descriptor)) {
-			/* Set a_alt_hnp_support for legacy otg device */
-			err = usb_control_msg(udev,
-				usb_sndctrlpipe(udev, 0),
-				USB_REQ_SET_FEATURE, 0,
-				USB_DEVICE_A_ALT_HNP_SUPPORT,
-				0, NULL, 0,
-				USB_CTRL_SET_TIMEOUT);
-			if (err < 0)
-				dev_err(&udev->dev,
-					"set a_alt_hnp_support failed: %d\n",
-					err);
+			/*
+			 * We are operating on a legacy OTP device
+			 * These should be told that they are operating
+			 * on the wrong port if we have another port that does
+			 * support HNP
+			 */
+			if (bus->otg_port != 0) {
+				/* Set a_alt_hnp_support for legacy otg device */
+				err = usb_control_msg(udev,
+					usb_sndctrlpipe(udev, 0),
+					USB_REQ_SET_FEATURE, 0,
+					USB_DEVICE_A_ALT_HNP_SUPPORT,
+					0, NULL, 0,
+					USB_CTRL_SET_TIMEOUT);
+				if (err < 0)
+					dev_err(&udev->dev,
+						"set a_alt_hnp_support failed: %d\n",
+						err);
+			}
 		}
 	}
 #endif
@@ -2450,8 +2466,6 @@ static void set_usb_port_removable(struct usb_device *udev)
 	u16 wHubCharacteristics;
 	bool removable = true;
 
-	dev_set_removable(&udev->dev, DEVICE_REMOVABLE_UNKNOWN);
-
 	if (!hdev)
 		return;
 
@@ -2463,11 +2477,11 @@ static void set_usb_port_removable(struct usb_device *udev)
 	 */
 	switch (hub->ports[udev->portnum - 1]->connect_type) {
 	case USB_PORT_CONNECT_TYPE_HOT_PLUG:
-		dev_set_removable(&udev->dev, DEVICE_REMOVABLE);
+		udev->removable = USB_DEVICE_REMOVABLE;
 		return;
 	case USB_PORT_CONNECT_TYPE_HARD_WIRED:
 	case USB_PORT_NOT_USED:
-		dev_set_removable(&udev->dev, DEVICE_FIXED);
+		udev->removable = USB_DEVICE_FIXED;
 		return;
 	default:
 		break;
@@ -2492,9 +2506,9 @@ static void set_usb_port_removable(struct usb_device *udev)
 	}
 
 	if (removable)
-		dev_set_removable(&udev->dev, DEVICE_REMOVABLE);
+		udev->removable = USB_DEVICE_REMOVABLE;
 	else
-		dev_set_removable(&udev->dev, DEVICE_FIXED);
+		udev->removable = USB_DEVICE_FIXED;
 
 }
 
@@ -2566,7 +2580,8 @@ int usb_new_device(struct usb_device *udev)
 	device_enable_async_suspend(&udev->dev);
 
 	/* check whether the hub or firmware marks this port as non-removable */
-	set_usb_port_removable(udev);
+	if (udev->parent)
+		set_usb_port_removable(udev);
 
 	/* Register the device.  The device driver is responsible
 	 * for configuring the device and invoking the add-device
@@ -2691,81 +2706,6 @@ error_autoresume:
 out_authorized:
 	usb_unlock_device(usb_dev);	/* complements locktree */
 	return result;
-}
-
-/**
- * get_port_ssp_rate - Match the extended port status to SSP rate
- * @hdev: The hub device
- * @ext_portstatus: extended port status
- *
- * Match the extended port status speed id to the SuperSpeed Plus sublink speed
- * capability attributes. Base on the number of connected lanes and speed,
- * return the corresponding enum usb_ssp_rate.
- */
-static enum usb_ssp_rate get_port_ssp_rate(struct usb_device *hdev,
-					   u32 ext_portstatus)
-{
-	struct usb_ssp_cap_descriptor *ssp_cap = hdev->bos->ssp_cap;
-	u32 attr;
-	u8 speed_id;
-	u8 ssac;
-	u8 lanes;
-	int i;
-
-	if (!ssp_cap)
-		goto out;
-
-	speed_id = ext_portstatus & USB_EXT_PORT_STAT_RX_SPEED_ID;
-	lanes = USB_EXT_PORT_RX_LANES(ext_portstatus) + 1;
-
-	ssac = le32_to_cpu(ssp_cap->bmAttributes) &
-		USB_SSP_SUBLINK_SPEED_ATTRIBS;
-
-	for (i = 0; i <= ssac; i++) {
-		u8 ssid;
-
-		attr = le32_to_cpu(ssp_cap->bmSublinkSpeedAttr[i]);
-		ssid = FIELD_GET(USB_SSP_SUBLINK_SPEED_SSID, attr);
-		if (speed_id == ssid) {
-			u16 mantissa;
-			u8 lse;
-			u8 type;
-
-			/*
-			 * Note: currently asymmetric lane types are only
-			 * applicable for SSIC operate in SuperSpeed protocol
-			 */
-			type = FIELD_GET(USB_SSP_SUBLINK_SPEED_ST, attr);
-			if (type == USB_SSP_SUBLINK_SPEED_ST_ASYM_RX ||
-			    type == USB_SSP_SUBLINK_SPEED_ST_ASYM_TX)
-				goto out;
-
-			if (FIELD_GET(USB_SSP_SUBLINK_SPEED_LP, attr) !=
-			    USB_SSP_SUBLINK_SPEED_LP_SSP)
-				goto out;
-
-			lse = FIELD_GET(USB_SSP_SUBLINK_SPEED_LSE, attr);
-			mantissa = FIELD_GET(USB_SSP_SUBLINK_SPEED_LSM, attr);
-
-			/* Convert to Gbps */
-			for (; lse < USB_SSP_SUBLINK_SPEED_LSE_GBPS; lse++)
-				mantissa /= 1000;
-
-			if (mantissa >= 10 && lanes == 1)
-				return USB_SSP_GEN_2x1;
-
-			if (mantissa >= 10 && lanes == 2)
-				return USB_SSP_GEN_2x2;
-
-			if (mantissa >= 5 && lanes == 2)
-				return USB_SSP_GEN_1x2;
-
-			goto out;
-		}
-	}
-
-out:
-	return USB_SSP_GEN_UNKNOWN;
 }
 
 /*
@@ -2955,11 +2895,9 @@ static int hub_port_wait_reset(struct usb_hub *hub, int port1,
 		/* extended portstatus Rx and Tx lane count are zero based */
 		udev->rx_lanes = USB_EXT_PORT_RX_LANES(ext_portstatus) + 1;
 		udev->tx_lanes = USB_EXT_PORT_TX_LANES(ext_portstatus) + 1;
-		udev->ssp_rate = get_port_ssp_rate(hub->hdev, ext_portstatus);
 	} else {
 		udev->rx_lanes = 1;
 		udev->tx_lanes = 1;
-		udev->ssp_rate = USB_SSP_GEN_UNKNOWN;
 	}
 	if (hub_is_wusb(hub))
 		udev->speed = USB_SPEED_WIRELESS;
@@ -5036,9 +4974,10 @@ hub_port_init(struct usb_hub *hub, struct usb_device *udev, int port1,
 	}
 	if (usb_endpoint_maxp(&udev->ep0.desc) == i) {
 		;	/* Initial ep0 maxpacket guess is right */
-	} else if ((udev->speed == USB_SPEED_FULL ||
+	} else if (((udev->speed == USB_SPEED_FULL ||
 				udev->speed == USB_SPEED_HIGH) &&
-			(i == 8 || i == 16 || i == 32 || i == 64)) {
+			(i == 8 || i == 16 || i == 32 || i == 64)) ||
+			(udev->speed >= USB_SPEED_SUPER && i > 0)) {
 		/* Initial guess is wrong; use the descriptor's value */
 		if (udev->speed == USB_SPEED_FULL)
 			dev_dbg(&udev->dev, "ep0 maxpacket = %d\n", i);
@@ -5849,7 +5788,7 @@ out_hdev_lock:
 
 	/* Balance the stuff in kick_hub_wq() and allow autosuspend */
 	usb_autopm_put_interface(intf);
-	kref_put(&hub->kref, hub_release);
+	hub_put(hub);
 
 	kcov_remote_stop();
 }

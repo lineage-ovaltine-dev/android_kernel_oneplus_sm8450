@@ -31,9 +31,15 @@ struct prefix_info {
 	__u8			length;
 	__u8			prefix_len;
 
+/*
+ * ANDROID: crc fix for commit 9354e0acdb74 ("net: ipv6: support
+ * reporting otherwise unknown prefix * flags in RTM_NEWPREFIX")
+ */
+#ifndef __GENKSYMS__
 	union __packed {
 		__u8		flags;
 		struct __packed {
+#endif
 #if defined(__BIG_ENDIAN_BITFIELD)
 			__u8	onlink : 1,
 			 	autoconf : 1,
@@ -45,8 +51,10 @@ struct prefix_info {
 #else
 #error "Please fix <asm/byteorder.h>"
 #endif
+#ifndef __GENKSYMS__
 		};
 	};
+#endif
 	__be32			valid;
 	__be32			prefered;
 	__be32			reserved2;
@@ -449,6 +457,10 @@ static inline void in6_ifa_hold(struct inet6_ifaddr *ifp)
 	refcount_inc(&ifp->refcnt);
 }
 
+static inline bool in6_ifa_hold_safe(struct inet6_ifaddr *ifp)
+{
+	return refcount_inc_not_zero(&ifp->refcnt);
+}
 
 /*
  *	compute link-local solicited-node multicast address

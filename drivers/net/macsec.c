@@ -3647,9 +3647,9 @@ static void macsec_get_stats64(struct net_device *dev,
 
 	dev_fetch_sw_netstats(s, dev->tstats);
 
-	s->rx_dropped = DEV_STATS_READ(dev, rx_dropped);
-	s->tx_dropped = DEV_STATS_READ(dev, tx_dropped);
-	s->rx_errors = DEV_STATS_READ(dev, rx_errors);
+	s->rx_dropped = dev->stats.rx_dropped;
+	s->tx_dropped = dev->stats.tx_dropped;
+	s->rx_errors = dev->stats.rx_errors;
 }
 
 static int macsec_get_iflink(const struct net_device *dev)

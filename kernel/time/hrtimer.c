@@ -2114,22 +2114,29 @@ static void migrate_hrtimer_list(struct hrtimer_clock_base *old_base,
 	}
 }
 
-int hrtimers_cpu_dying(unsigned int dying_cpu)
+int hrtimers_dead_cpu(unsigned int scpu)
 {
 	struct hrtimer_cpu_base *old_base, *new_base;
-	int i, ncpu = cpumask_first(cpu_active_mask);
+	int i;
 
-	tick_cancel_sched_timer(dying_cpu);
+	BUG_ON(cpu_online(scpu));
+	tick_cancel_sched_timer(scpu);
 
-	old_base = this_cpu_ptr(&hrtimer_bases);
-	new_base = &per_cpu(hrtimer_bases, ncpu);
-
+	/*
+	 * this BH disable ensures that raise_softirq_irqoff() does
+	 * not wakeup ksoftirqd (and acquire the pi-lock) while
+	 * holding the cpu_base lock
+	 */
+	local_bh_disable();
+	local_irq_disable();
+	old_base = &per_cpu(hrtimer_bases, scpu);
+	new_base = this_cpu_ptr(&hrtimer_bases);
 	/*
 	 * The caller is globally serialized and nobody else
 	 * takes two locks at once, deadlock is not possible.
 	 */
-	raw_spin_lock(&old_base->lock);
-	raw_spin_lock_nested(&new_base->lock, SINGLE_DEPTH_NESTING);
+	raw_spin_lock(&new_base->lock);
+	raw_spin_lock_nested(&old_base->lock, SINGLE_DEPTH_NESTING);
 
 	for (i = 0; i < HRTIMER_MAX_CLOCK_BASES; i++) {
 		migrate_hrtimer_list(&old_base->clock_base[i],
@@ -2140,13 +2147,15 @@ int hrtimers_cpu_dying(unsigned int dying_cpu)
 	 * The migration might have changed the first expiring softirq
 	 * timer on this CPU. Update it.
 	 */
-	__hrtimer_get_next_event(new_base, HRTIMER_ACTIVE_SOFT);
-	/* Tell the other CPU to retrigger the next event */
-	smp_call_function_single(ncpu, retrigger_next_event, NULL, 0);
+	hrtimer_update_softirq_timer(new_base, false);
 
-	raw_spin_unlock(&new_base->lock);
 	raw_spin_unlock(&old_base->lock);
+	raw_spin_unlock(&new_base->lock);
 
+	/* Check, if we got expired work to do */
+	__hrtimer_peek_ahead_timers();
+	local_irq_enable();
+	local_bh_enable();
 	return 0;
 }
 
@@ -2161,7 +2170,7 @@ void __init hrtimers_init(void)
 /**
  * schedule_hrtimeout_range_clock - sleep until timeout
  * @expires:	timeout value (ktime_t)
- * @delta:	slack in expires timeout (ktime_t)
+ * @delta:	slack in expires timeout (ktime_t) for SCHED_OTHER tasks
  * @mode:	timer mode
  * @clock_id:	timer clock to be used
  */
@@ -2188,6 +2197,13 @@ schedule_hrtimeout_range_clock(ktime_t *expires, u64 delta,
 		return -EINTR;
 	}
 
+	/*
+	 * Override any slack passed by the user if under
+	 * rt contraints.
+	 */
+	if (rt_task(current))
+		delta = 0;
+
 	hrtimer_init_sleeper_on_stack(&t, clock_id, mode);
 	hrtimer_set_expires_range_ns(&t.timer, *expires, delta);
 	hrtimer_sleeper_start_expires(&t, mode);
@@ -2207,7 +2223,7 @@ EXPORT_SYMBOL_GPL(schedule_hrtimeout_range_clock);
 /**
  * schedule_hrtimeout_range - sleep until timeout
  * @expires:	timeout value (ktime_t)
- * @delta:	slack in expires timeout (ktime_t)
+ * @delta:	slack in expires timeout (ktime_t) for SCHED_OTHER tasks
  * @mode:	timer mode
  *
  * Make the current task sleep until the given expiry time has
@@ -2215,7 +2231,8 @@ EXPORT_SYMBOL_GPL(schedule_hrtimeout_range_clock);
  * the current task state has been set (see set_current_state()).
  *
  * The @delta argument gives the kernel the freedom to schedule the
- * actual wakeup to a time that is both power and performance friendly.
+ * actual wakeup to a time that is both power and performance friendly
+ * for regular (non RT/DL) tasks.
  * The kernel give the normal best effort behavior for "@expires+@delta",
  * but may decide to fire the timer earlier, but no earlier than @expires.
  *
