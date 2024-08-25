@@ -34,6 +34,8 @@ config OPLUS_SYSTEM_KERNEL
 source "drivers/soc/oplus/device_info/Kconfig"
 #endif /* OPLUS_FEATURE_TP_BASIC */
 
+source "drivers/soc/oplus/multimedia/Kconfig"
+
 #ifdef OPLUS_FEATURE_SENSOR_SMEM
 source "drivers/soc/oplus/sensor/Kconfig"
 #endif /* OPLUS_FEATURE_SENSOR_SMEM */
