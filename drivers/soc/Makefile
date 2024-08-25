@@ -30,11 +30,12 @@ obj-y				+= xilinx/
 obj-$(CONFIG_ARCH_ZX)		+= zte/
 obj-$(CONFIG_SOC_KENDRYTE)	+= kendryte/
 
+obj-$(CONFIG_OPLUS_FEATURE_MM_FEEDBACK)	+= oplus/multimedia/
+
 #ifdef OPLUS_FEATURE_TP_BASIC
 obj-$(CONFIG_OPLUS_DEVICE_INFO)  +=  oplus/device_info/
 #endif /* OPLUS_FEATURE_TP_BASIC */
 
-$(warning MSM_ARCH: -$(MSM_ARCH)-)
 #ifdef OPLUS_FEATURE_SENSOR_SMEM
 obj-y                       += oplus/sensor/
 #endif /* OPLUS_FEATURE_SENSOR_SMEM */
@@ -47,9 +48,6 @@ obj-$(CONFIG_OPLUS_SENSOR_CONSUMER_IR_CORE) += oplus/oplus_consumer_ir/
 obj-y += oplus/boot/
 #endif /* OPLUS_FEATURE_BOOT */
 
-$(warning MSM_ARCH: -$(MSM_ARCH)-)
-ifneq ("$(MSM_ARCH)X", "waipio_tuivmX")
 #ifdef OPLUS_FEATURE_MDMFEATURE
 obj-$(CONFIG_OPLUS_FEATURE_MDMFEATURE)     += oplus/mdmfeature/
 #endif /*OPLUS_FEATURE_MDMFEATURE*/
-endif
