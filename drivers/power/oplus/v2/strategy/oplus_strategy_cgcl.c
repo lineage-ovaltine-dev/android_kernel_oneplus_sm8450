@@ -42,14 +42,14 @@ struct cgcl_strategy {
 static struct oplus_mms *comm_topic;
 static struct oplus_mms *gauge_topic;
 
-__maybe_unused static bool is_comm_topic_available()
+__maybe_unused static bool is_comm_topic_available(void)
 {
 	if (!comm_topic)
 		comm_topic = oplus_mms_get_by_name("common");
 	return !!comm_topic;
 }
 
-__maybe_unused static bool is_gauge_topic_available()
+__maybe_unused static bool is_gauge_topic_available(void)
 {
 	if (!gauge_topic)
 		gauge_topic = oplus_mms_get_by_name("gauge");
