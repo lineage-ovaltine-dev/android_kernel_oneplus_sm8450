@@ -1083,7 +1083,7 @@ static int sensor_sleep_ratio_init(struct sensor_fb_cxt *sensor_fb_cxt) {
 	pr_err("sensor_sleep_ratio_init,err=%d\n", err);
 	subsystem_desc_init(sensor_fb_cxt->subsystem_desc);
 	reset_subsys_sleep_stats();
-#if defined(CONFIG_DRM_MSM)
+#if IS_ENABLED(CONFIG_DRM_MSM) || IS_ENABLED(CONFIG_DRM_OPLUS_NOTIFY)
 	sensor_fb_cxt->fb_notif.notifier_call = sensor_fb_notifier;
 	err = msm_drm_register_client(&sensor_fb_cxt->fb_notif);
 	if (err) {
