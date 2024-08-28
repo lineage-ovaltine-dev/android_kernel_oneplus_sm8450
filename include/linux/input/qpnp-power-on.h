@@ -15,6 +15,12 @@
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
 
+struct pon_reg {
+	unsigned int val;
+	u16 addr;
+	struct list_head list;
+};
+
 struct qpnp_pon_config {
         u32                     pon_type;
         u32                     support_reset;
@@ -47,7 +53,9 @@ struct qpnp_pon {
        struct input_dev        *pon_input;
        struct qpnp_pon_config  *pon_cfg;
        struct pon_regulator    *pon_reg_cfg;
+       struct list_head        restore_regs;
        struct list_head        list;
+       struct mutex            restore_lock;
        struct delayed_work     bark_work;
        struct dentry           *debugfs;
        u16                     base;
