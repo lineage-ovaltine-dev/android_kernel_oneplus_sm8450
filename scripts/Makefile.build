@@ -286,10 +286,11 @@ $(obj)/%.o: $(src)/%.c $(recordmcount_source) $$(objtool_dep) FORCE
 	$(call if_changed_rule,cc_o_c)
 	$(call cmd,force_checksrc)
 
-cmd_mod = { \
-	echo $(if $($*-objs)$($*-y)$($*-m), $(addprefix $(obj)/, $($*-objs) $($*-y) $($*-m)), $(@:.mod=.o)); \
-	$(undefined_syms) echo; \
-	} > $@
+cmd_mod = $(file >$@,\
+		$(if $($*-objs)$($*-y)$($*-m), \
+			$(addprefix $(obj)/, $($*-objs) $($*-y) $($*-m)), \
+			$(@:.mod=.o))) \
+	$(undefined_syms) echo >> $@
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
 	cmd_mod_lds = $(if $(KBUILD_LDS_MODULE_ATTACH), cat $(srctree)/$(src)/$(firstword $(KBUILD_LDS_MODULE_ATTACH)) > $(@:.mod=.lds))
