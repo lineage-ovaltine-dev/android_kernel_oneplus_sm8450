@@ -78259,6 +78259,7 @@
       <pointer-type-def type-id='b254b8db' size-in-bits='64' id='ac5f2363'/>
       <pointer-type-def type-id='49a0ad34' size-in-bits='64' id='ac6963b2'/>
 <<<<<<< HEAD
+<<<<<<< HEAD
       <class-decl name='prot_inuse' size-in-bits='2048' is-struct='yes' visibility='default' filepath='net/core/sock.c' line='3369' column='1' id='ac763c5d'>
         <data-member access='public' layout-offset-in-bits='0'>
           <var-decl name='val' type-id='93e41790' visibility='default' filepath='net/core/sock.c' line='3370' column='1'/>
@@ -78267,6 +78268,11 @@
         <data-member access='public' layout-offset-in-bits='0'>
           <var-decl name='val' type-id='93e41790' visibility='default' filepath='net/core/sock.c' line='3358' column='1'/>
 >>>>>>> 951b8a3b227aeb4a3e5a352b707641ecced72dbc
+=======
+      <class-decl name='prot_inuse' size-in-bits='2048' is-struct='yes' visibility='default' filepath='net/core/sock.c' line='3369' column='1' id='ac763c5d'>
+        <data-member access='public' layout-offset-in-bits='0'>
+          <var-decl name='val' type-id='93e41790' visibility='default' filepath='net/core/sock.c' line='3370' column='1'/>
+>>>>>>> 31d0f88fa0576891c6cc517c7443fb0682279d29
         </data-member>
       </class-decl>
       <function-type size-in-bits='64' id='ac765b39'>
