@@ -62,11 +62,11 @@ static void ssc_interactive_set_dc_mode(uint16_t dc_mode)
 	struct ssc_interactive *ssc_cxt = g_ssc_cxt;
 	spin_lock(&ssc_cxt->rw_lock);
 	if (dc_mode == ssc_cxt->a_info.dc_mode) {
-		/*pr_info("dc_mode=%d is the same\n", dc_mode);*/
 		spin_unlock(&ssc_cxt->rw_lock);
 		return;
+	} else {
+		pr_info("dc_mode change to %d\n", dc_mode);
 	}
-	pr_info("start dc_mode=%d\n", dc_mode);
 	ssc_cxt->a_info.dc_mode = dc_mode;
 	spin_unlock(&ssc_cxt->rw_lock);
 
@@ -76,22 +76,58 @@ static void ssc_interactive_set_dc_mode(uint16_t dc_mode)
 static void ssc_interactive_set_pwm_turbo_mode(int on)
 {
 	struct ssc_interactive *ssc_cxt = g_ssc_cxt;
+	uint16_t brigtness = 0;
+	spin_lock(&ssc_cxt->rw_lock);
 	if (ssc_cxt->pwm_turbo_on == on) {
-		pr_info("set_pwm_turbo already done %d\n", on);
+		spin_unlock(&ssc_cxt->rw_lock);
+		return;
+	} else {
+		pr_info("pwm_mode change to %d, bri %d\n", on, ssc_cxt->last_primary_bri);
 	}
 	ssc_cxt->pwm_turbo_on = on;
-	pr_info("set_pwm_turbo %d\n", on);
+	brigtness = ssc_cxt->last_primary_bri;
+	spin_unlock(&ssc_cxt->rw_lock);
+
 	ssc_interactive_set_fifo(LCM_PWM_TURBO_TYPE, on);
-	ssc_interactive_set_fifo(LCM_BRIGHTNESS_TYPE, ssc_cxt->last_primary_bri);
+	if (!g_ssc_cxt->is_fold_dev) {
+		ssc_interactive_set_fifo(LCM_BRIGHTNESS_TYPE, brigtness);
+	}
+}
+
+static void ssc_interactive_set_hbm_mode(int on)
+{
+	struct ssc_interactive *ssc_cxt = g_ssc_cxt;
+	uint16_t brigtness = 0;
+	spin_lock(&ssc_cxt->rw_lock);
+	if (ssc_cxt->hbm_on == on) {
+		spin_unlock(&ssc_cxt->rw_lock);
+		return;
+	} else {
+		pr_info("hbm_mode change to %d, bri %d\n", on, ssc_cxt->last_primary_bri);
+	}
+	ssc_cxt->hbm_on = on;
+	brigtness = ssc_cxt->last_primary_bri;
+	spin_unlock(&ssc_cxt->rw_lock);
+
+	if (ssc_cxt->sup_hbm_mode == HBM_MODE_LONG_INTE) {
+		ssc_interactive_set_fifo(LCM_HBM_LONG_INTE_TYPE, on);
+		ssc_interactive_set_fifo(LCM_BRIGHTNESS_TYPE, brigtness);
+	} else if (ssc_cxt->sup_hbm_mode == HBM_MODE_SHORT_INTE) {
+		ssc_interactive_set_fifo(LCM_HBM_SHORT_INTE_TYPE, on);
+	} else {
+		/* do nothing */
+	}
 }
 
 #if IS_ENABLED(CONFIG_OPLUS_SENSOR_DRM_PANEL_ADFR_MIN_FPS)
 static void ssc_interactive_set_flash_freq(enum panel_event_notifier_tag panel_tag, uint16_t freq)
 {
 	struct ssc_interactive *ssc_cxt = g_ssc_cxt;
+	spin_lock(&ssc_cxt->rw_lock);
 	ssc_cxt->last_freq = freq;
+	spin_unlock(&ssc_cxt->rw_lock);
 	pr_info("set_flash_freq %d\n", freq);
-	ssc_interactive_set_fifo(LCM_ADFR_MIN_FPS, ssc_cxt->last_freq);
+	ssc_interactive_set_fifo(LCM_ADFR_MIN_FPS, freq);
 }
 #endif
 
@@ -121,6 +157,13 @@ static void ssc_interactive_set_brightness(enum panel_event_notifier_tag panel_t
 		for (cnt = 0; cnt < ssc_cxt->brl_info.pri_brl_num; cnt++) {
 			/* turn on pwm turbo*/
 			if (g_ssc_cxt->pwm_turbo_on) {
+				/* do nothing
+				 * CWB or SF, real-time transmission of all bri level
+				 */
+				break;
+			}
+
+			if (g_ssc_cxt->hbm_on && g_ssc_cxt->sup_hbm_mode == HBM_MODE_LONG_INTE) {
 				/* do nothing
 				 * CWB or SF, real-time transmission of all bri level
 				 */
@@ -414,6 +457,11 @@ static void lcdinfo_callback(enum panel_event_notifier_tag panel_tag,
 		ssc_interactive_set_flash_freq(panel_tag, notification->notif_data.data);
 		break;
 #endif
+	case DRM_PANEL_EVENT_HBM_STATE:
+		if (g_ssc_cxt->need_lb_algo) {
+			ssc_interactive_set_hbm_mode(notification->notif_data.data);
+		}
+		break;
 #if IS_ENABLED(CONFIG_OPLUS_SENSOR_FB_QC)
 	case DRM_PANEL_EVENT_UNBLANK:
 		if (g_ssc_cxt->sup_power_fb) {
@@ -655,6 +703,7 @@ static int __init ssc_interactive_init(void)
 {
 	int err = 0;
 	int lb_value = 0;
+	int hbm_mode = 0;
 	struct device_node *node = NULL;
 	struct ssc_interactive *ssc_cxt = kzalloc(sizeof(*ssc_cxt), GFP_KERNEL);
 
@@ -676,6 +725,12 @@ static int __init ssc_interactive_init(void)
 		} else {
 			ssc_cxt->sup_power_fb = false;
 			pr_err("not sup power_fb!");
+		}
+
+		err = of_property_read_u32(node, "sup-hbm-mode", &hbm_mode);
+		if (!err) {
+			ssc_cxt->sup_hbm_mode = hbm_mode;
+			pr_info("get hbm_mode:%d \n", hbm_mode);
 		}
 
 		err = of_property_read_u32(node, "need_lb_algo", &lb_value);
