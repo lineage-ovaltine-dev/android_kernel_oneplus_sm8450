@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2018-2020 Oplus. All rights reserved.
+
+config OPLUS_FEATURE_CMDLINE
+	tristate "Oplus command line"
+	default n
+	help
+	  define this config to get command line.
+
+config OPLUS_FEATURE_CHARGERPRESENT
+	tristate "Oplus charger present"
+	default n
+	help
+	  define this config to get charger present cmdline.
+
+config OPLUS_FEATURE_SIMCARDNUM
+	tristate "Oplus simcardnum"
+	default n
+	help
+	  define this config to get simcardnum cmdline.
