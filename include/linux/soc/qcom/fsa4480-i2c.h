@@ -5,6 +5,11 @@
 #ifndef FSA4480_I2C_H
 #define FSA4480_I2C_H
 
+#ifndef OPLUS_ARCH_EXTENDS
+/* Add for OPLUS MACRO */
+#define OPLUS_ARCH_EXTENDS
+#endif /* OPLUS_ARCH_EXTENDS */
+
 #include <linux/of.h>
 #include <linux/notifier.h>
 
