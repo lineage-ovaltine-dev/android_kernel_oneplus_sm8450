@@ -1,18 +1,23 @@
-/*******************************************************************************
- * 器件模拟与仿真, 配置驱动的功能开启
+/**************************************************** *******************************
+ * Device simulation and emulation, the function of configuration driver is turned on
  *
- * 文件名称: pseudo_sensor.c
- * 文件标识:
- * 内容摘要: 器件模拟与仿真, 实现与底层SP处理器驱动进行数据通讯的功能
- * 其它说明:
- * 当前版本: 1.1
- * 作    者: 80353364
- * 完成日期: 2021-12-01
+ * File: pseudo_sensor.c
+ * FileID:
+ * Content Summary: Device simulation and emulation,
+					realizing the function of data communication with the SensorHub
+ * Other Instructions:
+ * Current Version: 1.1
+ * Author: 80353364
+ * Completion Date: 2021-12-01
  *
- * 修订记录
- * 修改日期    版本  修改人      修改内容
- * 2021-12-01   1.0  80353364    功能实现
- * 2021-01-15   1.1  80353364    方便共享内存的环回BUF处理, 将相关地址计数器改为32bit
+ * Revision History
+ * Modification Version Modifier 	Content
+ * 2021-12-01 	 1.0 	 80353364 	function implementation
+ * 2022-01-15 	 1.1 	 80353364 	to facilitate the loopback BUF processing of shared memory,
+ *									change the relevant address counter to 32bit
+ * 2023-03-25	 1.2	 80353364	optimize the code design of the QCOM platform,
+ *									incorporate fault injection logic,
+ *									and NOT support kernels below 5.0
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -24,7 +29,6 @@
  * GNU General Public License for more details.
  *
  ******************************************************************************/
-
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -42,1236 +46,1603 @@
 #include <linux/version.h>
 #include <linux/io.h>
 
-// 高通子系统的共享内存分配
-#if defined(CONFIG_ARCH_QCOM)
-
 #include <linux/soc/qcom/smem.h>
-#elif defined(CONFIG_MTK_PLATFORM)
-#include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
-#include <linux/of_fdt.h>
-#include <linux/of_reserved_mem.h>
-#include "../../misc/mediatek/scp/mt6885/scp_helper.h"
-#else
-#error Macro not defined, check definition in kernel of the SOC manufacturer, revise the code or macro.
-#error 定义的宏没有出现，请查看是否SOC厂商内核定义有变化，请修订代码或宏定义.
-#endif
+#include <linux/qrtr.h>
+#include <linux/net.h>
+#include <linux/completion.h>
+#include <linux/idr.h>
+#include <linux/string.h>
+#include <net/sock.h>
+#include <linux/soc/qcom/qmi.h>
 
-#define DRV_TAG                             "[pseudo]"
-#define DBG(fmt, ...)                       pr_debug(DRV_TAG fmt, ##__VA_ARGS__);
-#define INF(fmt, ...)                       pr_info(DRV_TAG fmt, ##__VA_ARGS__);
-#define ERR(fmt, ...)                       pr_err(DRV_TAG fmt, ##__VA_ARGS__);
+#define DRV_TAG "<debug_kit>"
+#define DBG(fmt, ...) pr_debug(DRV_TAG fmt, ##__VA_ARGS__);
+#define INF(fmt, ...) pr_info(DRV_TAG fmt, ##__VA_ARGS__);
+#define ERR(fmt, ...) pr_err(DRV_TAG fmt, ##__VA_ARGS__);
 
+#define OPLUS_PSEUDO_SENSOR_MEM_ID 490
+#define DEBUG_KIT_SENSOR_SET_MEM_ADDR 10
+#define DEBUG_KIT_SENSOR_SET_DEBUG_KIT_DATA 12
 
-#define CFG_BUFSIZE                         512
-#define CFG_MAX_SENSORS                     16                  // 支持 16 个SENSOR(数据通道), 定义需是 8 的倍数
-#define CFG_SMEM_SZ                         SZ_64K              // 默认内存分配为 64KB, 注意高通由SLPI分配, 本定义不产生影响
-#define SZ_6K                               0x1800
-#define MIN(a, b)                           ((a) <= (b) ? (a) : (b))
+#define CFG_BUFSIZE 512
+#define CFG_MAX_SENSORS 16 // Support 16 SENSOR (data channels)
+#define CFG_SMEM_SZ SZ_64K
+#define MIN(a, b) ((a) <= (b) ? (a) : (b))
 
-// 设置默认的数据大小, 以 32KB 为计量, 注意需要减去 smem_head 所占的空间
-// 所有分配的空间大小需以 64Byte 对齐，因为数据序列发生器以 0x40 对齐
-// 最终默认内存分配为 64KB
+/*******************************************************************************
+ * driver data defined
+ ******************************************************************************/
+// Set the default data size, measured in 32KB, pay attention to subtract the space occupied by smem_head
+// All allocated space size needs to be aligned with 64Byte, because the data sequencer is aligned with 0x40
+// The final default memory allocation is 64KB
+static uint32_t g_def_sz[CFG_MAX_SENSORS] = { SZ_16K, SZ_16K, SZ_16K, SZ_1K,
+					      SZ_1K,  SZ_1K,  SZ_1K,  SZ_1K,
+					      SZ_1K,  SZ_1K,  SZ_1K,  SZ_1K,
+					      SZ_1K,  SZ_1K,  SZ_1K,  SZ_1K };
 
-static uint16_t g_def_sz[CFG_MAX_SENSORS]       = { SZ_6K,  SZ_6K,  SZ_6K,  SZ_6K,  SZ_1K,  SZ_1K,  SZ_1K,  SZ_1K,
-                                                SZ_512, SZ_512, SZ_512, SZ_512, SZ_512, SZ_512, SZ_512, SZ_256};
-static char *g_chn_type[CFG_MAX_SENSORS]    = { "acc1",    "gyro1",    "mag",      "temp",
-                                                "press",   "als1",     "proxi",    "hall",
-                                                "acc2",    "gyro2",    "als2",     "als3",
-                                                "n/a",     "n/a",      "n/a",      "n/a"};
-
-struct psensor_data {
-    uint64_t                phy_address;
-    uint64_t                vir_address;
-    uint32_t                size;
-    int16_t                 enable;                     // 功能是否启用
-    int16_t                 cur_chn;                    // 当前使用的通道[0,15]
-    int32_t                 time_left[CFG_MAX_SENSORS]; // timeleft
-    struct proc_dir_entry   *proc;
+static char *g_chn_type[CFG_MAX_SENSORS] = {
+	"acc1", "gyro1", "mag1", "temp", "press", "als1", "proxi", "halls",
+	"acc2", "gyro2", "mag2", "n/a",	 "n/a",	  "als2", "debug", "halla"
 };
 
-typedef struct smem_data_seq
-{
-    float           begin;                              // 初始值
-    float           end;                                // 结束值
-    float           delta;                              // 增量： 0 <0 >0
-    float           rand;                               // 随机修订值:    rand * [-0.01 - 0.99]
-}   smem_data_seq;
+/*******************************************************************************
+ * QCOM PLATFORM DEFINE
+ * type definition
+ ******************************************************************************/
+struct qmi_data {
+	unsigned host;
+	struct qmi_handle qmi;
+	struct mutex lock;
+};
 
+struct psensor_data {
+	uint64_t vir_address;
+	uint32_t size;
+	int16_t enable;
+	int16_t cur_chn;
+	int32_t time_left[CFG_MAX_SENSORS]; // timeleft
+	struct delayed_work time_left_work; // timer can NOT use mutex
+	struct proc_dir_entry *proc;
+	struct qmi_data client;
+};
 
-// 数据发生器: 最多支持 3个数据
-typedef struct smem_data_type1 {
-    uint32_t        magic;                              // 魔数
-    uint32_t        times;                              // 数据执行次数
-    uint32_t        times_run;                          // 数据剩余执行次数
-    uint32_t        type:16;                            // 数据类型，固定为 1
-    uint32_t        axis:16;                            // 单次上报数据个数
-    smem_data_seq   seq[3];
-}   smem_data_type1;
-
-// 支持 CFG_MAX_SENSORS 个 SENSOR 同时工作,
-// 为什么不用宏定义 16 ? 因为使用宏时可能存在一些问题如对齐、Cache命中等
-// 注意定义的数据对齐 每个SENSOR 为 16Byte
 typedef struct smem_head {
-    uint32_t        bp[CFG_MAX_SENSORS];                // 当前通道内存的起始偏移
-    uint32_t        size[CFG_MAX_SENSORS];              // 分配给指定 SENSOR 的内存大小, 使用的环回缓冲区不能超时该地址, 单位为 float 字数
-    uint32_t        wp[CFG_MAX_SENSORS];                // 当前写入数据的地址偏址, 单位为 float 字数
-    uint32_t        rp[CFG_MAX_SENSORS];                // 当前读取数据的地址偏址, 单位为 float 字数
-    uint8_t         type[CFG_MAX_SENSORS];              // 数据类型, 0: 数据序列 1: 数据序列发生器产生的数据
-    uint8_t         start[CFG_MAX_SENSORS];             // 数据启动标记 0: 数据未准备好 1: 数据已准备好 2: 数据正在读取中 3: 数据已取完
-    uint16_t        sst[CFG_MAX_SENSORS];               // 传感器工作状态: 0: 初始态 1 正常启用 2: 手动关闭 3: 启用错误测试功能
-    uint32_t        ecode[CFG_MAX_SENSORS];             // 错误代码反馈
-}   smem_head;
+	// Total is 1024 Byte, then CFG_MAX_SENSORS need <= 24
+	//<!---------------------------------    0B    ---------------------------------!>//
+	uint32_t bp[CFG_MAX_SENSORS]; // starting offset of the current channel memory
+	uint32_t size[CFG_MAX_SENSORS]; // memory size allocated to the specified SENSOR,
+	// ring-buf used must not time out for this address
+	// unit is float
+	uint32_t wp[CFG_MAX_SENSORS]; // offset of currently written data, unit is float
+	uint32_t rp[CFG_MAX_SENSORS]; // offset of currently read data, unit is float
+	uint8_t type[CFG_MAX_SENSORS]; // data type
+	// 0: data
+	// 2: constant value
+	uint8_t start[CFG_MAX_SENSORS]; // data start flag
+	// 0: data not ready
+	// 1: data is ready
+	// 2: data is being read
+	// 3: data has been retrieved
+	uint32_t rev[(512 - (18 * CFG_MAX_SENSORS)) >> 2];
+	// data reserved: a total of 512B above, 512B below
+	//<!---------------------------------   512B   ---------------------------------!>//
+	int32_t inject_start; // start flag
+	int32_t rev2[3]; // data reserved2
+	int32_t inject_data[124]; // data for fault injection: 704 BYTE
+	//<!---------------------------------   1024B  ---------------------------------!>//
+} smem_head;
 
+static struct psensor_data g_data;
 
-// 分配的全局数据
-static struct psensor_data *g_data  = NULL;
+/*******************************************************************************
+ * Driver module parameters
+ * ADSP: 34
+ * SLPI: 49
+ ******************************************************************************/
+#define ADSP_INSTANCE 34
+#define SLPI_INSTANCE 49
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
-static void psensor_timer_out(unsigned long data);
-static DEFINE_TIMER(g_timer, psensor_timer_out, 0, 0);
-#else
-static void psensor_timer_out(struct timer_list *data);
-static DEFINE_TIMER(g_timer, psensor_timer_out);
-#endif
+/*******************************************************************************
+ * QCOM PLATFORM DEFINE
+ * message definition
+ * Due to the MTK definition, the QCOM platform is best roughly compatible with MTK
+ * magic_number type value1
+ * 0x50534F00 	0 	 NA			Open shared memory, or set the first address of the memory
+ * 0x50534F00 	1 	 NA			Disable shared memory
+ * 0x50534F00 	2 	 X			Open memory access
+ * 0x50534F00 	3 	 X			Disable memory access
+ ******************************************************************************/
+#define DATA_REQ1_TLV_TYPE 0x1
+#define DATA_RESP1_TLV_TYPE 0x2
+#define DATA_OPT1_TLV_TYPE 0x10
+#define DATA_OPT2_TLV_TYPE 0x11
+#define TEST_MED_DATA_SIZE_V01 8192
+#define TEST_MAX_NAME_SIZE_V01 255
+#define TEST_DATA_REQ_MSG_ID_V01 0x21
+#define TEST_DATA_REQ_MAX_MSG_LEN_V01 8456
+#define SNS_CLIENT_REQ_LEN_MAX_V01 1000
 
-// 定时器函数: 每秒钟执行一次
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
-static void psensor_timer_out(unsigned long data)
-#else
-static void psensor_timer_out(struct timer_list *data)
-#endif
+struct test_name_type_v01 {
+	u32 name_len;
+	char name[TEST_MAX_NAME_SIZE_V01];
+};
+
+struct test_data_req_msg_v01 {
+	u32 data_len;
+	u8 data[TEST_MED_DATA_SIZE_V01];
+
+	u8 client_name_valid;
+	struct test_name_type_v01 client_name;
+};
+
+struct test_data_resp_msg_v01 {
+	struct qmi_response_type_v01 resp;
+
+	u8 data_valid;
+	u32 data_len;
+	u8 data[TEST_MED_DATA_SIZE_V01];
+
+	u8 service_name_valid;
+	struct test_name_type_v01 service_name;
+};
+
+static struct qmi_elem_info test_name_type_v01_ei[] = {
+	{
+		.data_type = QMI_DATA_LEN,
+		.elem_len = 1,
+		.elem_size = sizeof(u8),
+		.array_type = NO_ARRAY,
+		.tlv_type = QMI_COMMON_TLV_TYPE,
+		.offset = offsetof(struct test_name_type_v01, name_len),
+	},
+	{
+		.data_type = QMI_UNSIGNED_1_BYTE,
+		.elem_len = TEST_MAX_NAME_SIZE_V01,
+		.elem_size = sizeof(char),
+		.array_type = VAR_LEN_ARRAY,
+		.tlv_type = QMI_COMMON_TLV_TYPE,
+		.offset = offsetof(struct test_name_type_v01, name),
+	},
+	{}
+};
+
+static struct qmi_elem_info test_data_req_msg_v01_ei[] = {
+	{
+		.data_type = QMI_DATA_LEN,
+		.elem_len = 1,
+		.elem_size = sizeof(u32),
+		.array_type = NO_ARRAY,
+		.tlv_type = DATA_REQ1_TLV_TYPE,
+		.offset = offsetof(struct test_data_req_msg_v01, data_len),
+	},
+	{
+		.data_type = QMI_UNSIGNED_1_BYTE,
+		.elem_len = TEST_MED_DATA_SIZE_V01,
+		.elem_size = sizeof(u8),
+		.array_type = VAR_LEN_ARRAY,
+		.tlv_type = DATA_REQ1_TLV_TYPE,
+		.offset = offsetof(struct test_data_req_msg_v01, data),
+	},
+	{
+		.data_type = QMI_OPT_FLAG,
+		.elem_len = 1,
+		.elem_size = sizeof(u8),
+		.array_type = NO_ARRAY,
+		.tlv_type = DATA_OPT1_TLV_TYPE,
+		.offset = offsetof(struct test_data_req_msg_v01,
+				   client_name_valid),
+	},
+	{
+		.data_type = QMI_STRUCT,
+		.elem_len = 1,
+		.elem_size = sizeof(struct test_name_type_v01),
+		.array_type = NO_ARRAY,
+		.tlv_type = DATA_OPT1_TLV_TYPE,
+		.offset = offsetof(struct test_data_req_msg_v01, client_name),
+		.ei_array = test_name_type_v01_ei,
+	},
+	{}
+};
+
+static struct qmi_elem_info test_data_resp_msg_v01_ei[] = {
+	{
+		.data_type = QMI_STRUCT,
+		.elem_len = 1,
+		.elem_size = sizeof(struct qmi_response_type_v01),
+		.array_type = NO_ARRAY,
+		.tlv_type = DATA_RESP1_TLV_TYPE,
+		.offset = offsetof(struct test_data_resp_msg_v01, resp),
+		.ei_array = qmi_response_type_v01_ei,
+	},
+	{
+		.data_type = QMI_OPT_FLAG,
+		.elem_len = 1,
+		.elem_size = sizeof(u8),
+		.array_type = NO_ARRAY,
+		.tlv_type = DATA_OPT1_TLV_TYPE,
+		.offset = offsetof(struct test_data_resp_msg_v01, data_valid),
+	},
+	{
+		.data_type = QMI_DATA_LEN,
+		.elem_len = 1,
+		.elem_size = sizeof(u32),
+		.array_type = NO_ARRAY,
+		.tlv_type = DATA_OPT1_TLV_TYPE,
+		.offset = offsetof(struct test_data_resp_msg_v01, data_len),
+	},
+	{
+		.data_type = QMI_UNSIGNED_1_BYTE,
+		.elem_len = TEST_MED_DATA_SIZE_V01,
+		.elem_size = sizeof(u8),
+		.array_type = VAR_LEN_ARRAY,
+		.tlv_type = DATA_OPT1_TLV_TYPE,
+		.offset = offsetof(struct test_data_resp_msg_v01, data),
+	},
+	{
+		.data_type = QMI_OPT_FLAG,
+		.elem_len = 1,
+		.elem_size = sizeof(u8),
+		.array_type = NO_ARRAY,
+		.tlv_type = DATA_OPT2_TLV_TYPE,
+		.offset = offsetof(struct test_data_resp_msg_v01,
+				   service_name_valid),
+	},
+	{
+		.data_type = QMI_STRUCT,
+		.elem_len = 1,
+		.elem_size = sizeof(struct test_name_type_v01),
+		.array_type = NO_ARRAY,
+		.tlv_type = DATA_OPT2_TLV_TYPE,
+		.offset = offsetof(struct test_data_resp_msg_v01, service_name),
+		.ei_array = test_name_type_v01_ei,
+	},
+	{}
+};
+
+/*******************************************************************************
+ * internal function
+ * ADSP: 34
+ * SLPI: 49
+ ******************************************************************************/
+static int qmi_new_server(struct qmi_handle *qmi, struct qmi_service *service)
 {
-    int         i, cnt          = 0;
-    smem_head   *smem           = (smem_head*)g_data->vir_address;
+	// QMI_PING_SERVICE_INSTANCE: 34 on adsp and 49 on slpi
+	int ret = 0;
+	unsigned int instance = service->instance;
+	struct sockaddr_qrtr sq = { AF_QIPCRTR, service->node, service->port };
 
-    if (0 == g_data->vir_address) {
-        mod_timer(&g_timer, jiffies + msecs_to_jiffies(1000));
-        return;
-    }
+	INF("service: %d %d %d \n", service->service, service->version,
+	    instance);
 
-    for (i = 0; i < CFG_MAX_SENSORS; i++) {
-        if (g_data->time_left[i] <= 0)  {
-            continue;
-        } else {
-            g_data->time_left[i]--;
-            cnt++;
-        }
+	if ((ADSP_INSTANCE != instance) && (SLPI_INSTANCE != instance)) {
+		INF("not sensor qmi service, exit\n");
+		return -EPERM;
+	} else if (SLPI_INSTANCE == instance) {
+		// is SLPI
+		g_data.client.host = 3;
+	}
 
-        if (g_data->time_left[i] <= 0)  {
-            smem->start[i]      = 1;
-        }
-    }
+	ret = kernel_connect(qmi->sock, (struct sockaddr *)&sq, sizeof(sq), 0);
+	if (ret < 0) {
+		ERR("failed to bind to remote service port: %d@%d\n",
+		    service->node, service->port);
+		return ret;
+	} else {
+		INF("bind to remote service port successed: %d@%d\n",
+		    service->node, service->port);
+	}
 
-    if (cnt > 0)                mod_timer(&g_timer, jiffies + msecs_to_jiffies(1000));
+	service->priv = &g_data.client;
+
+	return 0;
 }
 
-#if defined(CONFIG_ARCH_QCOM)
-static int psensor_smem_get(unsigned host, unsigned id, uint64_t *vaddr, size_t *size)
+static void qmi_del_server(struct qmi_handle *qmi, struct qmi_service *service)
 {
-    void *vmem                  = qcom_smem_get(host, id, size);
-    if (IS_ERR(vmem)) {
-        ERR("qcom_smem_get failed\n");
-        *vaddr                  = 0;
-        *size                   = 0;
-        return -ENOMEM;
-    } else {
-        INF("qcom_smem_get true size: %lld Bytes\n", *size);
-    }
-
-    *vaddr                      = (uint64_t)vmem;
-    return 0;
-}
-#endif
-
-
-// 初始化共享内存空间
-// 根据总 size 大小以及 sz 数组的长度为 smem 进行空间划分
-// 注意 size 为 byte 计量, sz 中也为 byte 计量, 但 smem 中为 float 计量
-static int psensor_smem_init(smem_head *smem, uint32_t size, uint16_t *sz)
-{
-    int i;
-    uint32_t offset             = sizeof(smem_head);
-    uint32_t total_sz           = 0;
-
-    // 校验数据空间分配
-    for (i = 0; i < CFG_MAX_SENSORS; i++) {
-        total_sz               += sz[i];
-    }
-
-    if (0 == total_sz) {
-        ERR("allocate size total is 0, failed\n");
-        return -EPERM;
-    }
-
-    if (total_sz > size - offset) {
-        ERR("allocate size(%X) more than free size %X\n", total_sz, size - offset);
-        return -ENOMEM;
-    }
-
-    // 为什么要除以 4? 是因为转换为 float 个数
-    for (i = 0; i < CFG_MAX_SENSORS; i++) {
-        smem->size[i]           = sz[i] >> 2;
-        smem->bp[i]             = offset >> 2;
-        smem->wp[i]             = 0;
-        smem->rp[i]             = 0;
-        offset                  = offset + sz[i];
-        smem->type[i]           = 0;
-        smem->start[i]          = 0;
-    }
-
-    return 0;
+	INF("enter qmi_del_server\n");
 }
 
-// 将用户态的内存复制到共享内存通路, 复制时不允许 wp == rp
-// smem:    共享内存的起始地址
-// chn:     共享内存通道号
-// buf:     用户空间buf
-// count:   用户空间传输的数据bytes, 注意该数据为 4Byte对齐(float32)
-static int psensor_smem_put(smem_head *smem, int chn, const char __user *buf, size_t count)
+static struct qmi_ops qmi_lookup_ops = {
+	.new_server = qmi_new_server,
+	.del_server = qmi_del_server,
+};
+
+static int qcom_qmi_service_init(void)
 {
-    char *p;
-    uint32_t len        = 0;
-    uint32_t size       = count >> 2;           // 数据为  4Byte 的整数倍
-    size                = MIN(size, smem->size[chn] - smem->wp[chn] + smem->rp[chn]);
-    len                 = MIN(size, smem->size[chn] - (smem->wp[chn] % smem->size[chn]));
+	int ret;
+	struct qmi_handle *qmi = &g_data.client.qmi;
 
-    p                   = (char*)g_data->vir_address;
-    p                  += smem->bp[chn] << 2;
-    p                  += (smem->wp[chn] % smem->size[chn]) << 2;
+	memset(&g_data.client, 0, sizeof(g_data.client));
+	mutex_init(&g_data.client.lock);
+	g_data.client.host = 2; // ADSP
 
-    if (copy_from_user(p, buf, len << 2)) {
-        ERR("ecode val copy from user error\n");
-        return -EIO;
-    }
+	ret = qmi_handle_init(qmi, TEST_DATA_REQ_MAX_MSG_LEN_V01,
+			      &qmi_lookup_ops, NULL);
 
+	if (ret < 0) {
+		ERR("qmi_handle_init failed1: %d\n", ret);
+		return ret;
+	}
 
-    if (size - len > 0) {
-        p               = (char*)g_data->vir_address;
-        p              += smem->bp[chn] << 2;
-        if (copy_from_user(p, buf + len, (size - len) << 2)) {
-            ERR("ecode val copy from user error\n");
-            return -EIO;
-        }
-    }
+	ret = qmi_add_lookup(qmi, 15, 1, ADSP_INSTANCE);
+	if (ret < 0) {
+		ERR("qmi_add_lookup failed2: %d\n", ret);
+		return ret;
+	}
 
-    smem->wp[chn]      += size;
-    return size << 2;
+	ret = qmi_add_lookup(qmi, 15, 1, SLPI_INSTANCE);
+	if (ret < 0) {
+		ERR("qmi_add_lookup failed3: %d\n", ret);
+		return ret;
+	}
+
+	return ret;
 }
 
-
-static ssize_t proc_data_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static int qcom_send_msg(uint8_t cmd, char *data, int len)
 {
+	struct test_data_resp_msg_v01 *resp;
+	struct test_data_req_msg_v01 *req;
+	struct qmi_txn txn;
+	int ret = -1;
+	struct qmi_handle *qmi = &g_data.client.qmi;
 
-    char        data[2048];
-    int         i, len, total   = 0;
-    char        *d              = (char *)&data[0];
-    smem_head   *smem           = (smem_head*)g_data->vir_address;
+	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	if (!req) {
+		ERR("init request memory error\n");
+		return -ENOMEM;
+	} else {
+		INF("init request memory successed\n");
+	}
 
-    if (*ppos > 0 || count < 2048)      return 0;
+	resp = kzalloc(sizeof(*resp), GFP_KERNEL);
+	if (!resp) {
+		kfree(req);
+		ERR("init response memory error\n");
+		return -ENOMEM;
+	} else {
+		INF("init response memory successed\n");
+	}
 
-    if (0 == g_data->vir_address) {
-        total                   = snprintf(d, 2048, "memory invalid, plese enable first\n");
-        ERR("memory invalid, plese enable first\n");
-        if (copy_to_user(buf, data, total))   return -EFAULT;
-        *ppos                   = total;
-        return total;
-    }
+	mutex_lock(&g_data.client.lock);
 
-    len                         = snprintf(d, 2048-total, "addr\t\t: %016lX\n", g_data->vir_address);
-    d                          += len;
-    total                      += len;
-    len                         = snprintf(d, 2048-total, "size\t\t: %X\n", g_data->size);
-    d                          += len;
-    total                      += len;
-    len                         = snprintf(d, 2048-total, "current chn\t: %d\n", g_data->cur_chn);
-    d                          += len;
-    total                      += len;
-    len                         = snprintf(d, 2048-total, "chn sst name\toff.f\tsize.f\tdtype\tstart\twp.f\trp.f\tecode\ttimeleft\n");
-    d                          += len;
-    total                      += len;
+	req->data_len = min_t(uint32_t, sizeof(req->data), len);
+	memcpy(req->data, data, req->data_len);
 
-    for(i = 0; i < CFG_MAX_SENSORS; i++) {
-        if ( i == g_data->cur_chn) {
-            len                 = snprintf(d, 2048-total, "%02d< %-4X%s\t%X\t%X\t%X\t%X\t%X\t%X\t%X\t%d\n",
-                                    i, smem->sst[i], g_chn_type[i], smem->bp[i], smem->size[i], smem->type[i],
-                                    smem->start[i],  smem->wp[i], smem->rp[i], smem->ecode[i], g_data->time_left[i]);
-        } else {
-            len                 = snprintf(d, 2048-total, "%02d  %-4X%s\t%X\t%X\t%X\t%X\t%X\t%X\t%X\t%d\n",
-                                    i, smem->sst[i], g_chn_type[i], smem->bp[i], smem->size[i], smem->type[i],
-                                    smem->start[i],  smem->wp[i], smem->rp[i], smem->ecode[i], g_data->time_left[i]);
+	ERR("send data: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+	    req->data[0], req->data[1], req->data[2], req->data[3],
+	    req->data[4], req->data[5], req->data[6], req->data[7]);
 
-        }
-        d                      += len;
-        total                  += len;
-    }
+	ret = qmi_txn_init(qmi, &txn, test_data_resp_msg_v01_ei, resp);
+	if (ret < 0) {
+		ERR("init response data error: %d\n", ret);
+		goto out;
+	} else {
+		INF("init response data successed\n");
+	}
 
-    if (copy_to_user(buf, data, total))   return -EFAULT;
+	ret = qmi_send_request(qmi, NULL, &txn, TEST_DATA_REQ_MSG_ID_V01,
+			       TEST_DATA_REQ_MAX_MSG_LEN_V01,
+			       test_data_req_msg_v01_ei, req);
+	if (ret < 0) {
+		qmi_txn_cancel(&txn);
+		ERR("send msg faild: %d\n", ret);
+		goto out;
+	} else {
+		INF("send msg successed: %d\n", ret);
+	}
 
-    *ppos                       = total;
-    return total;
+	ret = qmi_txn_wait(&txn, 2 * HZ);
+
+	if (ret < 0) {
+		ERR("get msg response faild: %d\n", ret);
+		goto out;
+	}
+
+	INF("resp result: %d, error: %d\n", resp->resp.result,
+	    resp->resp.error);
+
+	ERR("resp data: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+	    resp->data[0], resp->data[1], resp->data[2], resp->data[3],
+	    resp->data[4], resp->data[5], resp->data[6], resp->data[7]);
+
+	if (resp->data_valid && resp->data[0] == '0') {
+		INF("resp result successed\n");
+		ret = 0;
+	} else {
+		INF("resp result failed\n");
+		ret = -EINVAL;
+	}
+
+out:
+	mutex_unlock(&g_data.client.lock);
+	kfree(resp);
+	kfree(req);
+
+	return ret;
+}
+
+static int qcom_send_fatal_msg(char *data, int len)
+{
+	uint32_t cust_cmd[4];
+
+	len = MIN(16, len);
+
+	memset(&cust_cmd[0], 0, sizeof(cust_cmd));
+	memcpy(&cust_cmd[0], data, len);
+
+	//	cust_cmd[0] = (cust_cmd[0] & 0xFFFF) | 0x50540000;
+	cust_cmd[0] = (cust_cmd[0] & 0xFF) | 0x50544E00;
+
+	return qcom_send_msg(DEBUG_KIT_SENSOR_SET_DEBUG_KIT_DATA,
+			     (char *)&cust_cmd[0], len);
+}
+
+static int qcom_qmi_service_free(void)
+{
+	struct qmi_handle *qmi = &g_data.client.qmi;
+
+	qmi_handle_release(qmi);
+
+	return 0;
+}
+
+static int qcom_get_smem(void)
+{
+	int ret;
+	void *vmem;
+	size_t size;
+	uint32_t cust_cmd[2];
+
+	cust_cmd[0] = 0x50534F00;
+	cust_cmd[1] = OPLUS_PSEUDO_SENSOR_MEM_ID;
+	ret = qcom_send_msg(0, (char *)&cust_cmd, 8);
+	if (ret < 0) {
+		ERR("bp malloc memory failed\n");
+		return ret;
+	}
+
+	vmem = qcom_smem_get(g_data.client.host, OPLUS_PSEUDO_SENSOR_MEM_ID,
+			     &size);
+
+	if (IS_ERR(vmem)) {
+		ERR("qcom_smem_alloc failed, host: %d type: %d\n",
+		    g_data.client.host, OPLUS_PSEUDO_SENSOR_MEM_ID);
+
+		g_data.vir_address = 0;
+		g_data.size = 0;
+		return -ENOMEM;
+	}
+
+	INF("qcom_smem_alloc successed, host: %d type: %d size: %ldB\n",
+	    g_data.client.host, OPLUS_PSEUDO_SENSOR_MEM_ID, size);
+
+	g_data.vir_address = (uint64_t)vmem;
+	g_data.size = size;
+	return 0;
+}
+
+static int qcom_put_smem(void)
+{
+	int ret = 0;
+	uint32_t cust_cmd[2];
+	cust_cmd[0] = 0x50534F01;
+	cust_cmd[1] = 0;
+	ret = qcom_send_msg(0, (char *)&cust_cmd, 8);
+	if (ret >= 0) {
+		g_data.vir_address = 0;
+	}
+	return ret;
+}
+
+static int qcom_set_chn(uint32_t chn_data, int enabled)
+{
+	int ret;
+	uint32_t cust_cmd[2];
+
+	if (enabled) {
+		INF("open data channels: 0x%08X\n", chn_data);
+		cust_cmd[0] = 0x50534F02;
+	} else {
+		INF("close data channels: 0x%08X\n", chn_data);
+		cust_cmd[0] = 0x50534F03;
+	}
+
+	cust_cmd[1] = chn_data;
+
+	ret = qcom_send_msg(0, (char *)&cust_cmd, 8);
+	if (ret < 0) {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/*******************************************************************************
+ * Platform-dependent uniformly named functions
+ ******************************************************************************/
+#define platform_set_chn qcom_set_chn
+#define platform_get_smem qcom_get_smem
+#define platform_put_smem qcom_put_smem
+#define platform_send_fatal_msg qcom_send_fatal_msg
+#define platform_client_init qcom_qmi_service_init
+#define platform_client_release qcom_qmi_service_free
+
+/*******************************************************************************
+ * driver common function
+ ******************************************************************************/
+static int fault_inject_append(int32_t fault_code, int32_t frequency,
+			       int32_t repeat, int32_t test_type)
+{
+	smem_head *smem = (smem_head *)g_data.vir_address;
+	if (NULL == smem) {
+		return -ENOMEM;
+	}
+
+	smem->inject_data[0] = fault_code;
+	smem->inject_data[1] = frequency;
+	smem->inject_data[2] = repeat;
+	smem->inject_data[3] = test_type;
+
+	return 0;
+}
+
+static int fault_inject_reset(void)
+{
+	smem_head *smem = (smem_head *)g_data.vir_address;
+	if (NULL == smem) {
+		return -ENOMEM;
+	}
+
+	smem->inject_start = 0;
+	memset(smem->inject_data, 0, sizeof(smem->inject_data));
+	return 0;
+}
+
+static int fault_inject_start(void)
+{
+	int ret;
+	smem_head *smem = (smem_head *)g_data.vir_address;
+	if (NULL == smem) {
+		return -ENOMEM;
+	}
+
+	ret = platform_send_fatal_msg((char *)&smem->inject_data[0], 16);
+
+	if (ret >= 0) {
+		smem->inject_start = 1;
+	}
+
+	return ret;
+}
+
+static void psensor_timer_left(struct work_struct *dwork)
+{
+	int i;
+	int ret;
+	int cnt = 0;
+	uint32_t chns = 0;
+	smem_head *smem = (smem_head *)g_data.vir_address;
+
+	if (0 == g_data.vir_address) {
+		return;
+	}
+
+	for (i = 0; i < CFG_MAX_SENSORS; i++) {
+		if (g_data.time_left[i] == 0) {
+			continue;
+		} else {
+			g_data.time_left[i]--;
+			cnt++;
+		}
+
+		if (g_data.time_left[i] == 0) {
+			smem->start[i] = 1;
+			chns |= 1U << i;
+			cnt--;
+		}
+	}
+
+	if (chns) {
+		ret = platform_set_chn(chns, 1);
+		if (ret < 0) {
+			ERR("mtk set chn failed: 0x%08X\n", chns);
+		}
+	}
+
+	if (cnt > 0) {
+		schedule_delayed_work(&g_data.time_left_work,
+				      msecs_to_jiffies(1000));
+	}
+}
+
+// Initialize the shared memory space
+// According to the total size and the length of the sz array, the space is divided into smem
+// Note that size is measured in bytes, sz is also measured in bytes, but in smem it is measured in float
+static int psensor_smem_init(smem_head *smem, uint32_t size, uint32_t *sz)
+{
+	int i;
+	uint32_t offset = sizeof(smem_head);
+	uint32_t total_sz = 0;
+
+	for (i = 0; i < CFG_MAX_SENSORS; i++) {
+		total_sz += sz[i];
+	}
+
+	if (0 == total_sz) {
+		ERR("allocate size total is 0, failed\n");
+		return -EPERM;
+	}
+
+	if (total_sz > size - offset) {
+		ERR("allocate size(%X) more than free size %X\n", total_sz,
+		    size - offset);
+		return -ENOMEM;
+	}
+
+	// Why divide by 4? It is because of conversion to float number
+	for (i = 0; i < CFG_MAX_SENSORS; i++) {
+		smem->size[i] = sz[i] >> 2;
+		smem->bp[i] = offset >> 2;
+		smem->wp[i] = 0;
+		smem->rp[i] = 0;
+		offset = offset + sz[i];
+		smem->type[i] = 0;
+		smem->start[i] = 0;
+	}
+	return 0;
+}
+
+// Copy the user mode memory to the shared memory path, wp == rp is not allowed when copying
+// smem: start address of shared memory
+// chn: shared memory channel number
+// buf: user space buf
+// count: bytes of data transmitted by user space, note that the data is 4Byte aligned (float32)
+static int psensor_smem_put(smem_head *smem, int chn, const char __user *buf,
+			    size_t count)
+{
+	char *p;
+	uint32_t len = 0;
+	uint32_t size = count >> 2;
+	size = MIN(size, smem->size[chn] - smem->wp[chn] + smem->rp[chn]);
+	len = MIN(size, smem->size[chn] - (smem->wp[chn] % smem->size[chn]));
+
+	p = (char *)g_data.vir_address;
+	p += smem->bp[chn] << 2;
+	p += (smem->wp[chn] % smem->size[chn]) << 2;
+
+	if (copy_from_user(p, buf, len << 2)) {
+		ERR("copy data from user error1\n");
+		return -EIO;
+	}
+
+	if (size - len > 0) {
+		p = (char *)g_data.vir_address;
+		p += smem->bp[chn] << 2;
+		if (copy_from_user(p, buf + len, (size - len) << 2)) {
+			ERR("copy data from user error2\n");
+			return -EIO;
+		}
+	}
+
+	smem->wp[chn] += size;
+	return size << 2;
+}
+
+static ssize_t proc_data_r(struct file *file, char __user *buf, size_t count,
+			   loff_t *ppos)
+{
+#define MLV 1792
+
+	char data[MLV];
+	int i, len, total = 0;
+	char *d = (char *)&data[0];
+	smem_head *smem = (smem_head *)g_data.vir_address;
+
+	if (*ppos > 0 || count < sizeof(data)) {
+		return 0;
+	}
+
+	if (0 == g_data.vir_address) {
+		total = snprintf(d, MLV,
+				 "memory invalid, plese enable first\n");
+		ERR("memory invalid, plese enable first\n");
+		if (copy_to_user(buf, data, total)) {
+			return -EFAULT;
+		}
+		*ppos = total;
+		return total;
+	}
+
+	len = snprintf(d, MLV - total, "addr\t\t: %016llX\n",
+		       g_data.vir_address);
+	d += len;
+	total += len;
+	len = snprintf(d, MLV - total, "size\t\t: %X\n", g_data.size);
+	d += len;
+	total += len;
+	len = snprintf(d, MLV - total, "chn\t\t: %d\n", g_data.cur_chn);
+	d += len;
+	total += len;
+	len = snprintf(
+		d, MLV - total,
+		"chn name\toff.f\tsize.f\tdtype\tstart\twp.f\trp.f\ttimeleft\n");
+	d += len;
+	total += len;
+
+	for (i = 0; i < CFG_MAX_SENSORS; i++) {
+		if (i == g_data.cur_chn) {
+			len = snprintf(
+				d, MLV - total,
+				"%02d< %-4s\t%X\t%X\t%X\t%X\t%X\t%X\t%d\n", i,
+				g_chn_type[i], smem->bp[i], smem->size[i],
+				smem->type[i], smem->start[i], smem->wp[i],
+				smem->rp[i], g_data.time_left[i]);
+		} else {
+			len = snprintf(
+				d, MLV - total,
+				"%02d  %-4s\t%X\t%X\t%X\t%X\t%X\t%X\t%d\n", i,
+				g_chn_type[i], smem->bp[i], smem->size[i],
+				smem->type[i], smem->start[i], smem->wp[i],
+				smem->rp[i], g_data.time_left[i]);
+		}
+		d += len;
+		total += len;
+	}
+
+	if (copy_to_user(buf, data, total)) {
+		return -EFAULT;
+	}
+
+	*ppos = total;
+	return total;
 }
 
 static uint32_t IEEE754_INT_TO_FLOAT(int v)
 {
-    uint32_t data           = 0;
-    uint32_t e              = 23;
+	uint32_t data = 0;
+	uint32_t e = 23;
 
-    // 特殊值处理
-    if (v == 0)             return 0x0;
-    if (v == -1)            return 0xBF800000;
-    if (v == 1)             return 0x3F800000;
+	if (v == 0) {
+		return 0x0;
+	}
+	if (v == -1) {
+		return 0xBF800000;
+	}
+	if (v == 1) {
+		return 0x3F800000;
+	}
 
-    if (v < 0)  data        = 1 << 31;
-    v                       =  v < 0 ? -v: v;
+	if (v < 0) {
+		data = 1 << 31;
+	}
+	v = v < 0 ? -v : v;
 
-    // 00..22 为 有效数字，不处理 >= 1<<23 的数据
-    if (v >= (1<<23))   v   = (1 << 23);
+	if (v >= (1 << 23)) {
+		v = (1 << 23);
+	}
 
-    // 将 v 中的 1 移到 第 23 位
-    while ((v & (1 << 23)) == 0x0) {
-        v                   = v << 1;
-        e--;
-    }
-    v                       = v & 0x7FFFFF;
-    e                       = e + 127;
-    data                    = data | e << 23 | v;
+	while ((v & (1 << 23)) == 0x0) {
+		v = v << 1;
+		e--;
+	}
+	v = v & 0x7FFFFF;
+	e = e + 127;
+	data = data | e << 23 | v;
 
-    return data;
+	return data;
 }
 
-
-// 注意：真实数据序列允许绕回
-// 数据发生器不支持绕回
-static ssize_t proc_data_w(struct file *file, const char __user *buf, size_t count, loff_t *lo)
+static ssize_t proc_data_w(struct file *file, const char __user *buf,
+			   size_t count, loff_t *lo)
 {
-    char        data[128];
-    int         v[8];
-    uint32_t    *p;             // 其实是 float
-    int         i;
-    int         ret             = 0;
-    int         chn             = (int)g_data->cur_chn;
-    smem_head   *smem           = (smem_head*)g_data->vir_address;
-    int         len             = MIN(count, 128);
+	char data[128];
+	int v[8];
+	uint32_t *p; // Actually float
+	int i;
+	int ret = 0;
+	int chn = (int)g_data.cur_chn;
+	smem_head *smem = (smem_head *)g_data.vir_address;
+	int len = MIN(count, sizeof(data) - 1);
 
-    if (0 == g_data->vir_address) {
-        ERR("no share memory, plese bind share memory first\n");
-        return -ENOMEM;
-    }
+	if (0 == g_data.vir_address) {
+		ERR("no share memory, plese bind share memory first\n");
+		return -ENOMEM;
+	}
 
-    if (2 == smem->type[chn]) {
-        if (smem->size[chn] <= 16)  return -ENOMEM;
+	if (2 == smem->type[chn]) {
+		if (smem->size[chn] <= 16) {
+			return -ENOMEM;
+		}
 
-        memset(data, 0, sizeof(data));
-        memset(v, 0, sizeof(v));
+		memset(data, 0, sizeof(data));
+		memset(v, 0, sizeof(v));
 
-        if (copy_from_user(data, buf, len)) {
-            ERR("sizes val copy from user error\n");
-            return -EIO;
-        }
-        // 内核代码中的 sscanf 不支持 float 读取，故只能使用整型数据
-        ret                     = sscanf(data, "%d,%d,%d,%d,%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
-        INF("get %d values\n", ret);
+		if (copy_from_user(data, buf, len)) {
+			ERR("sizes val copy from user error\n");
+			return -EIO;
+		}
+		// sscanf in the kernel code does not support float reading, so only integer data can be used
+		ret = sscanf(data, "%d,%d,%d,%d,%d,%d,%d,%d", &v[0], &v[1],
+			     &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
+		INF("get %d values\n", ret);
 
-        // 数据重新写入到头部
-        smem->rp[chn]           = 0;
-        smem->wp[chn]           = ret;
-        p                       = (uint32_t*)g_data->vir_address;       // 其实是 float
-        p                      += smem->bp[chn];
-        for (i = 0; i < ret; i++) {
-            *p++                = IEEE754_INT_TO_FLOAT(v[i]);
-        }
+		smem->rp[chn] = 0;
+		smem->wp[chn] = ret;
+		p = (uint32_t *)g_data.vir_address;
+		p += smem->bp[chn];
+		for (i = 0; i < ret; i++) {
+			*p++ = IEEE754_INT_TO_FLOAT(v[i]);
+		}
 
-        ret                     = count;
-    } else {
-        ret                     = psensor_smem_put(smem, chn, buf, count);
-    }
+		ret = count;
+	} else {
+		ret = psensor_smem_put(smem, chn, buf, count);
+	}
+	if (ret < 0) {
+		ERR("data copy failed, ret = %d\n", ret);
+	}
 
-    if (ret < 0)                ERR("data copy failed, ret = %d\n", ret);
-
-    return ret;
+	return ret;
 }
 
-
-static ssize_t proc_sizes_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t proc_sizes_r(struct file *file, char __user *buf, size_t count,
+			    loff_t *ppos)
 {
-    char        data[512];
-    int         chn, i, len     = 0;
-    char        *d              = (char *)&data[0];
+	char data[512];
+	int chn, i, len = 0;
+	char *d = (char *)&data[0];
 
-    if (*ppos > 0 || count < sizeof(data))  return 0;
+	if (*ppos > 0 || count < sizeof(data)) {
+		return 0;
+	}
 
-    for(chn = 0; chn < CFG_MAX_SENSORS; chn++) {
-        i                       = snprintf(d, 512-len, "chn%2d :\t%04X\n", chn, g_def_sz[chn]);
-        d                      += i;
-        len                    += i;
-    }
+	for (chn = 0; chn < CFG_MAX_SENSORS; chn++) {
+		i = snprintf(d, 512 - len, "chn%2d :\t%08X\n", chn,
+			     g_def_sz[chn]);
+		d += i;
+		len += i;
+	}
 
-    if (copy_to_user(buf, data, len))   return -EFAULT;
+	if (copy_to_user(buf, data, len)) {
+		return -EFAULT;
+	}
 
-    *ppos                       = len;
-    return len;
+	*ppos = len;
+	return len;
 }
 
-
-static ssize_t proc_sizes_w(struct file *file, const char __user *buf, size_t count, loff_t *lo)
+static ssize_t proc_sizes_w(struct file *file, const char __user *buf,
+			    size_t count, loff_t *lo)
 {
-    int         ret;
-    int         i;
-    char        data[128];
-    uint16_t    s[CFG_MAX_SENSORS];
-    int         len     = MIN(count, 128);
+	int ret;
+	int i;
+	char data[128];
+	uint32_t s[CFG_MAX_SENSORS];
+	int len = MIN(count, sizeof(data) - 1);
 
-    if (0 == g_data->vir_address) {
-        ERR("no share memory, plese bind share memory first\n");
-        return -ENOMEM;
-    }
+	if (0 == g_data.vir_address) {
+		ERR("no share memory, plese bind share memory first\n");
+		return -ENOMEM;
+	}
 
-    memset(data, 0, sizeof(data));
-    if (copy_from_user(data, buf, len)) {
-        ERR("sizes val copy from user error\n");
-        return -EIO;
-    }
+	memset(data, 0, sizeof(data));
+	if (copy_from_user(data, buf, len)) {
+		ERR("sizes val copy from user error\n");
+		return -EIO;
+	}
 
-    for (i = 0; i < CFG_MAX_SENSORS; i++) {
-        s[i]            = 0;
-    }
+	for (i = 0; i < CFG_MAX_SENSORS; i++) {
+		s[i] = 0;
+	}
 
-    // 读取数据, 注意数据单位为 KB
-    ret                 = sscanf(data, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
-                                    &s[0],&s[1],&s[2],&s[3],&s[4],&s[5],&s[6],&s[7],&s[8],
-                                    &s[9],&s[10],&s[11],&s[12],&s[13],&s[14],&s[15]);
+	// Read data, note that the data unit is KB
+	ret = sscanf(data, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+		     &s[0], &s[1], &s[2], &s[3], &s[4], &s[5], &s[6], &s[7],
+		     &s[8], &s[9], &s[10], &s[11], &s[12], &s[13], &s[14],
+		     &s[15]);
 
-    INF("get %d valid data\n", ret);
-    // 转换数据 KB 为 B
-    for (i = 0; i < ret; i++) {
-        s[i]          <<= 10;
-    }
+	INF("get %d valid data\n", ret);
+	for (i = 0; i < ret; i++) {
+		s[i] <<= 10;
+	}
 
-    // 尝试分配各通道空间并返回分配结果
-    ret                 = psensor_smem_init((smem_head*)g_data->vir_address, g_data->size, s);
+	ret = platform_set_chn(-1U, 0);
+	if (ret < 0) {
+		ERR("set chn failed: 0xFFFFFFFF\n");
+		return -EIO;
+	}
 
-    // 如果分配成功，将数据写入 g_def_sz, 其实不写入也没有问题, 只是为了后续可能的操作
-    if (ret >= 0) {
-        for (i = 0; i < CFG_MAX_SENSORS; i++) {
-            g_def_sz[i] = s[i];
-        }
-    } else {
-        return ret;
-    }
+	// Try to allocate space for each channel and return the allocation result
+	ret = psensor_smem_init((smem_head *)g_data.vir_address, g_data.size,
+				s);
 
-    return count;
+	// If the allocation is successful, write the data to g_def_sz.
+	// In fact, there is no problem if you don’t write it, it’s just for possible follow-up operations
+	if (ret >= 0) {
+		for (i = 0; i < CFG_MAX_SENSORS; i++) {
+			g_def_sz[i] = s[i];
+		}
+	} else {
+		return ret;
+	}
+
+	return count;
 }
 
-
-static ssize_t proc_datareset_w(struct file *file, const char __user *buf, size_t count, loff_t *lo)
+static ssize_t proc_datareset_w(struct file *file, const char __user *buf,
+				size_t count, loff_t *lo)
 {
-    char        *p;
-    char        data[16];
-    int         len, reset      = 0;
-    int         chn             = (int)g_data->cur_chn;
-    smem_head   *smem           = (smem_head*)g_data->vir_address;
+	char *p;
+	char data[16];
+	int len;
+	int ret;
+	int reset = 0;
+	int chn = (int)g_data.cur_chn;
+	smem_head *smem = (smem_head *)g_data.vir_address;
 
-    if (0 == g_data->vir_address) {
-        ERR("invalid memory address\n");
-        return -EIO;
-    }
+	if (0 == g_data.vir_address) {
+		ERR("invalid memory address\n");
+		return -EIO;
+	}
 
-    memset(data, 0, sizeof(data));
+	memset(data, 0, sizeof(data));
 
-    len                         = MIN(count, 16);
+	len = MIN(count, sizeof(data) - 1);
 
-    if (copy_from_user(data, buf, len)) {
-        ERR("datareset val copy from user error\n");
-        return -EIO;
-    }
+	if (copy_from_user(data, buf, len)) {
+		ERR("datareset val copy from user error\n");
+		return -EIO;
+	}
 
-    if (1 == sscanf(data, "%d", &reset)) {
-        INF("datareset val input: %d\n", reset);
-    } else {
-        ERR("datareset val input invalid\n");
-        return -EINVAL;
-    }
+	if (1 == sscanf(data, "%d", &reset)) {
+		INF("datareset val input: %d\n", reset);
+	} else {
+		ERR("datareset val input invalid\n");
+		return -EINVAL;
+	}
 
-    if (1 != reset)             return count;
+	if (1 != reset) {
+		return count;
+	}
 
-    p                           = (char*)g_data->vir_address;
-    p                          += smem->bp[chn] << 2;
-    memset(p, 0, smem->size[chn] << 2);
-    smem->wp[chn]               = 0;
-    smem->rp[chn]               = 0;
-    smem->type[chn]             = 0;
-    smem->start[chn]            = 0;
+	p = (char *)g_data.vir_address;
+	p += smem->bp[chn] << 2;
+	memset(p, 0, smem->size[chn] << 2);
+	smem->wp[chn] = 0;
+	smem->rp[chn] = 0;
+	smem->type[chn] = 0;
+	smem->start[chn] = 0;
 
-    return count;
+	ret = platform_set_chn(1U << chn, 0);
+	if (ret < 0) {
+		ERR("set chn failed: 0x%08X\n", 1U << chn);
+		return -EIO;
+	}
+	return count;
 }
 
-
-static ssize_t proc_timeleft_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t proc_timeleft_r(struct file *file, char __user *buf,
+			       size_t count, loff_t *ppos)
 {
-    char        data[512];
-    int         chn, i, len     = 0;
-    char        *d              = (char *)&data[0];
+	char data[512];
+	int chn, i, len = 0;
+	char *d = (char *)&data[0];
 
-    if (*ppos > 0 || count < 512)       return 0;
+	if (*ppos > 0 || count < 512) {
+		return 0;
+	}
 
-    for(chn = 0; chn < CFG_MAX_SENSORS; chn++) {
-        i                       = snprintf(d, 512-len, "chn%2d timeleft\t: %d\n", chn, g_data->time_left[chn]);
-        d                      += i;
-        len                    += i;
-    }
+	for (chn = 0; chn < CFG_MAX_SENSORS; chn++) {
+		i = snprintf(d, 512 - len, "chn%2d timeleft\t: %d\n", chn,
+			     g_data.time_left[chn]);
+		d += i;
+		len += i;
+	}
 
-    if (copy_to_user(buf, data, len))   return -EFAULT;
+	if (copy_to_user(buf, data, len)) {
+		return -EFAULT;
+	}
 
-    *ppos                       = len;
-    return len;
+	*ppos = len;
+	return len;
 }
 
-
-// 写入格式1: 直接写入数据表示使用当前通道
-// 写入格式2: "0xFF,4" > timeleft  前一个 指定的通道编号，后一个是多少秒后启用
-static ssize_t proc_timeleft_w(struct file *file, const char __user *buf, size_t count, loff_t *lo)
+// Write format 1: Directly write data means use the current channel
+// Write format 2: "0xFF,4" > timeleft The channel number specified by the previous one,
+// and the number of seconds after the next one is enabled
+static ssize_t proc_timeleft_w(struct file *file, const char __user *buf,
+			       size_t count, loff_t *lo)
 {
-    int     i;
-    char    data[32];
-    int     timeleft            = 0;
-    u32     chns                = 0;
-    int     len                 = MIN(count, sizeof(data));
+	int i;
+	int ret;
+	char data[32];
+	int timeleft = 0;
+	u32 chns = 0;
+	smem_head *smem = NULL;
+	int len = MIN(count, sizeof(data) - 1);
 
-    memset(data, 0, sizeof(data));
+	memset(data, 0, sizeof(data));
 
-    if (copy_from_user(data, buf, len)) {
-        ERR("timeleft val copy from user error\n");
-        return -EIO;
-    }
+	if (copy_from_user(data, buf, len)) {
+		ERR("timeleft val copy from user error\n");
+		return -EIO;
+	}
 
-    if (2 == sscanf(data, "0x%X,%d", &chns, &timeleft)) {
-        INF("timeleft val input: chn: 0x%X, %d\n", chns, timeleft);
-    } else if (2 == sscanf(data, "0x%X %d", &chns, &timeleft)) {
-        INF("timeleft val input: chn: 0x%X, %d\n", chns, timeleft);
-    } else if (2 == sscanf(data, "0x%X, %d", &chns, &timeleft)) {
-        INF("timeleft val input: chn: 0x%X, %d\n", chns, timeleft);
-    } else if (1 == sscanf(data, "%d", &timeleft)) {
-        INF("timeleft val input: %d\n", timeleft);
-    } else {
-        ERR("input invalid, it like: echo \"0xFF 10\" > timeleft\n");
-        return -EINVAL;
-    }
+	if (2 == sscanf(data, "0x%X,%d", &chns, &timeleft)) {
+		INF("timeleft val input: chn: 0x%X, %d\n", chns, timeleft);
+	} else if (2 == sscanf(data, "0x%X %d", &chns, &timeleft)) {
+		INF("timeleft val input: chn: 0x%X, %d\n", chns, timeleft);
+	} else if (2 == sscanf(data, "0x%X, %d", &chns, &timeleft)) {
+		INF("timeleft val input: chn: 0x%X, %d\n", chns, timeleft);
+	} else if (1 == sscanf(data, "%d", &timeleft)) {
+		INF("timeleft val input: %d\n", timeleft);
+	} else {
+		ERR("input invalid, it like: echo \"0xFF 10\" > timeleft\n");
+		return -EINVAL;
+	}
 
-    if (0 == chns) {
-        g_data->time_left[g_data->cur_chn]  = timeleft;
-    } else {
-        for (i = 0; i < CFG_MAX_SENSORS; i++) {
-            if (chns & (1 << i)) {
-                g_data->time_left[i]        = timeleft;
-            }
-        }
-    }
+	if (0 == chns) {
+		chns = 1U << g_data.cur_chn;
+	}
 
-    // 启动数据处理
-    mod_timer(&g_timer, jiffies + msecs_to_jiffies(1000));
+	for (i = 0; i < CFG_MAX_SENSORS; i++) {
+		if (chns & (1U << i)) {
+			g_data.time_left[i] = timeleft;
+		}
+	}
 
-    return count;
+	if (0 == timeleft && g_data.vir_address) {
+		// start immediately
+		smem = (smem_head *)g_data.vir_address;
+		for (i = 0; i < CFG_MAX_SENSORS; i++) {
+			if (chns & (1U << i)) {
+				smem->start[i] = 1;
+			}
+		}
+		ret = platform_set_chn(chns, 1);
+		if (ret < 0) {
+			ERR("set chn failed: 0x%08X\n", chns);
+		}
+	} else {
+		schedule_delayed_work(&g_data.time_left_work,
+				      msecs_to_jiffies(1000));
+	}
+
+	return count;
 }
 
-static ssize_t proc_sst_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t proc_datatype_r(struct file *file, char __user *buf,
+			       size_t count, loff_t *ppos)
 {
-    static char     *mod_txt[4] = {"init", "valid", "invalid", "error"};
+	char data[CFG_BUFSIZE];
+	int len;
+	int chn = (int)g_data.cur_chn;
+	smem_head *smem = (smem_head *)g_data.vir_address;
 
-    char            data[512];
-    int             i, len      = 0;
-    char            *d          = (char *)&data[0];
-    int             chn         = (int)g_data->cur_chn;
-    smem_head       *smem       = (smem_head*)g_data->vir_address;
+	if (*ppos > 0 || count < CFG_BUFSIZE) {
+		return 0;
+	}
 
-    if (*ppos > 0 || count < 512)       return 0;
+	len = snprintf(data, CFG_BUFSIZE, "%u\n", smem->type[chn]);
 
-    i                           = snprintf(d, 512-len, "chn\tstatus\tmode\n");
-    d                          += i;
-    len                        += i;
+	if (copy_to_user(buf, data, len)) {
+		return -EFAULT;
+	}
 
-    for(chn = 0; chn < CFG_MAX_SENSORS; chn++) {
-        i                       = snprintf(d, 512-len, "%d\t%u\t%s\n", chn, smem->sst[chn], mod_txt[smem->sst[chn]]);
-        d                      += i;
-        len                    += i;
-    }
-
-    if (copy_to_user(buf, data, len))   return -EFAULT;
-
-    *ppos                       = len;
-    return len;
+	*ppos = len;
+	return len;
 }
 
-
-// 写入格式: 直接写入数据表示使用当前通道
-static ssize_t proc_sst_w(struct file *file, const char __user *buf, size_t count, loff_t *lo)
+static ssize_t proc_datatype_w(struct file *file, const char __user *buf,
+			       size_t count, loff_t *lo)
 {
-    char        data[32];
-    int         st              = 0;
-    smem_head   *smem           = (smem_head*)g_data->vir_address;
-    int         len             = MIN(count, sizeof(data));
+	char data[16];
+	int len;
+	int type = 0;
+	int chn = (int)g_data.cur_chn;
+	smem_head *smem = (smem_head *)g_data.vir_address;
 
-    memset(data, 0, sizeof(data));
+	memset(data, 0, sizeof(data));
 
-    if (copy_from_user(data, buf, len)) {
-        ERR("timeleft val copy from user error\n");
-        return -EIO;
-    }
+	len = MIN(count, sizeof(data) - 1);
 
-    if (1 == sscanf(data, "%d", &st)) {
-        INF("sensor status val input: %d\n", st);
-    } else {
-        ERR("input invalid, it like: echo 1 > sst\n");
-        return -EINVAL;
-    }
+	if (copy_from_user(data, buf, len)) {
+		ERR("datatype val copy from user error\n");
+		return -EIO;
+	}
 
-    // 注意, sst 的值设置范围为：
-    // 0: SENSOR 没有工作(初始态)
-    // 1: SENSOR 工作在正常模式
-    // 2: SENSOR 被手动关闭
-    // 3: SENSOR 工作在异常模拟模式，此时 ecode 值才起作用。
-    if (0 <= st && st < 4) {
-        smem->sst[g_data->cur_chn]  = st;
-    } else {
-        ERR("input value verify invalid\n");
-        return -EINVAL;
-    }
+	if (1 == sscanf(data, "%d", &type)) {
+		INF("datatype val input: %d\n", type);
+	} else {
+		ERR("datatype val input invalid\n");
+		return -EINVAL;
+	}
 
-    return count;
+	if (type < 0 || type > 2) {
+		ERR("datatype val out range\n");
+		return -EINVAL;
+	}
+
+	smem->type[chn] = type;
+	return count;
 }
 
-
-static ssize_t proc_ecode_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t proc_vir_r(struct file *file, char __user *buf, size_t count,
+			  loff_t *ppos)
 {
-    char        data[512];
-    int         i, len          = 0;
-    char        *d              = (char *)&data[0];
-    int         chn             = (int)g_data->cur_chn;
-    smem_head   *smem           = (smem_head*)g_data->vir_address;
+	char data[CFG_BUFSIZE];
+	int len = 0;
 
-    if (*ppos > 0 || count < 512)       return 0;
+	if (*ppos > 0 || count < CFG_BUFSIZE) {
+		return 0;
+	}
 
-    for(chn = 0; chn < CFG_MAX_SENSORS; chn++) {
-        i                       = snprintf(d, 512-len, "chn%2d ecode\t: %08X(%u)\n", chn, smem->ecode[chn], smem->ecode[chn]);
-        d                      += i;
-        len                    += i;
-    }
+	len = snprintf(data, CFG_BUFSIZE, "0x%016llX\n", g_data.vir_address);
 
-    if (copy_to_user(buf, data, len))   return -EFAULT;
+	if (copy_to_user(buf, data, len)) {
+		return -EFAULT;
+	}
 
-    *ppos                       = len;
-    return len;
+	*ppos = len;
+	return len;
 }
 
-
-// 写入格式: 直接写入数据表示使用当前通道
-static ssize_t proc_ecode_w(struct file *file, const char __user *buf, size_t count, loff_t *lo)
+static ssize_t proc_freemem_r(struct file *file, char __user *buf, size_t count,
+			      loff_t *ppos)
 {
-    char        data[32];
-    int         ecode           = 0;
-    smem_head   *smem           = (smem_head*)g_data->vir_address;
-    int         len             = MIN(count, sizeof(data));
+	char data[CFG_BUFSIZE];
+	uint32_t bytes;
+	int len = 0;
+	char *d = &data[0];
 
-    memset(data, 0, sizeof(data));
+	if (*ppos > 0 || count < CFG_BUFSIZE) {
+		return 0;
+	}
 
-    if (copy_from_user(data, buf, len)) {
-        ERR("ecode val copy from user error\n");
-        return -EIO;
-    }
+	bytes = (uint32_t)qcom_smem_get_free_space(-1);
+	len += snprintf(d, CFG_BUFSIZE - len, "[zone comm]\t: 0x%08X\n", bytes);
+	d = &data[len];
 
-    if (1 == sscanf(data, "%d", &ecode)) {
-        INF("ecode val input: %d\n", ecode);
-    } else {
-        ERR("input invalid, it like: echo 1 > ecode\n");
-        return -EINVAL;
-    }
+	bytes = (uint32_t)qcom_smem_get_free_space(0);
+	len += snprintf(d, CFG_BUFSIZE - len, "[zone apss]\t: 0x%08X\n", bytes);
+	d = &data[len];
 
-    if (ecode >= 0) {
-        smem->ecode[g_data->cur_chn]    = ecode;
-    } else {
-        ERR("input value verify invalid\n");
-        return -EINVAL;
-    }
+	bytes = (uint32_t)qcom_smem_get_free_space(1);
+	len += snprintf(d, CFG_BUFSIZE - len, "[zone mpss]\t: 0x%08X\n", bytes);
+	d = &data[len];
 
-    return count;
+	bytes = (uint32_t)qcom_smem_get_free_space(2);
+	len += snprintf(d, CFG_BUFSIZE - len, "[zone adsp]\t: 0x%08X\n", bytes);
+	d = &data[len];
+
+	bytes = (uint32_t)qcom_smem_get_free_space(3);
+	len += snprintf(d, CFG_BUFSIZE - len, "[zone slpi]\t: 0x%08X\n", bytes);
+
+	if (copy_to_user(buf, data, len)) {
+		return -EFAULT;
+	}
+
+	*ppos = len;
+	return len;
 }
 
-static ssize_t proc_datatype_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t proc_current_r(struct file *file, char __user *buf, size_t count,
+			      loff_t *ppos)
 {
-    char        data[CFG_BUFSIZE];
-    int         len, chn        = (int)g_data->cur_chn;
-    smem_head   *smem           = (smem_head*)g_data->vir_address;
+	char data[CFG_BUFSIZE];
+	int len = 0;
 
-    if (*ppos > 0 || count < CFG_BUFSIZE)   return 0;
+	if (*ppos > 0 || count < CFG_BUFSIZE) {
+		return 0;
+	}
 
-    len                         = snprintf(data, CFG_BUFSIZE,"%u\n", smem->type[chn]);
+	len = snprintf(data, CFG_BUFSIZE, "%d\n", g_data.cur_chn);
 
-    if(copy_to_user(buf, data, len))        return -EFAULT;
+	if (copy_to_user(buf, data, len)) {
+		return -EFAULT;
+	}
 
-    *ppos                       = len;
-    return len;
+	*ppos = len;
+	return len;
 }
 
-static ssize_t proc_datatype_w(struct file *file, const char __user *buf, size_t count, loff_t *lo)
+static ssize_t proc_current_w(struct file *file, const char __user *buf,
+			      size_t count, loff_t *lo)
 {
-    char        data[16];
-    int         len, type       = 0;
-    int         chn             = (int)g_data->cur_chn;
-    smem_head   *smem           = (smem_head*)g_data->vir_address;
+	int len, cur_chn;
+	char data[16];
 
-    memset(data, 0, sizeof(data));
+	memset(data, 0, sizeof(data));
 
-    len                         = MIN(count, 16);
+	len = MIN(count, sizeof(data) - 1);
 
-    if (copy_from_user(data, buf, len)) {
-        ERR("datatype val copy from user error\n");
-        return -EIO;
-    }
+	if (copy_from_user(data, buf, len)) {
+		ERR("current val copy from user error\n");
+		return -EIO;
+	}
 
-    if (1 == sscanf(data, "%d", &type)) {
-        INF("datatype val input: %d\n", type);
-    } else {
-        ERR("datatype val input invalid\n");
-        return -EINVAL;
-    }
+	if (1 == sscanf(data, "%d", &cur_chn)) {
+		INF("current val input: %d\n", cur_chn);
+	} else {
+		ERR("current val input invalid\n");
+		return -EINVAL;
+	}
 
-    if (type < 0 || type > 2) {
-        ERR("datatype val out range\n");
-        return -EINVAL;
-    }
+	if (cur_chn < 0 || cur_chn > (CFG_MAX_SENSORS - 1)) {
+		ERR("current val out range\n");
+		return -EINVAL;
+	}
 
-    smem->type[chn]         = type;
-    return count;
+	g_data.cur_chn = cur_chn;
+	return count;
 }
 
-static ssize_t proc_phy_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t proc_bind_r(struct file *file, char __user *buf, size_t count,
+			   loff_t *ppos)
 {
-    char data[CFG_BUFSIZE];
-    int len             = 0;
+	char data[CFG_BUFSIZE];
+	int len = 0;
 
-    if (*ppos > 0 || count < CFG_BUFSIZE)   return 0;
+	if (*ppos > 0 || count < CFG_BUFSIZE) {
+		return 0;
+	}
 
-    len                 = snprintf(data, CFG_BUFSIZE, "0x%016lX\n", g_data->phy_address);
+	len = snprintf(data, CFG_BUFSIZE, "%d\n", g_data.enable);
 
-    if(copy_to_user(buf, data, len))        return -EFAULT;
+	if (copy_to_user(buf, data, len)) {
+		return -EFAULT;
+	}
 
-    *ppos               = len;
-    return len;
-
+	*ppos = len;
+	return len;
 }
 
-static ssize_t proc_vir_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t proc_bind_w(struct file *file, const char __user *buf,
+			   size_t count, loff_t *lo)
 {
-    char data[CFG_BUFSIZE];
-    int len             = 0;
+	void *vmem;
+	int len;
+	int ret = 0;
+	size_t size = 0;
+	int enable = 0;
+	char data[16];
 
-    if (*ppos > 0 || count < CFG_BUFSIZE)   return 0;
+	memset(data, 0, sizeof(data));
 
-    len                 = snprintf(data, CFG_BUFSIZE, "0x%016lX\n", g_data->vir_address);
+	len = MIN(count, sizeof(data) - 1);
 
-    if(copy_to_user(buf, data, len))        return -EFAULT;
+	if (copy_from_user(data, buf, len)) {
+		ERR("read bind val input error\n");
+		return -EIO;
+	}
 
-    *ppos               = len;
-    return len;
+	if (1 != sscanf(data, "%d", &enable)) {
+		ERR("invalid input\n");
+		return -EINVAL;
+	}
+
+	enable = enable & 0x0F;
+
+	switch (enable) {
+	case 0x00:
+		// Disable shared memory
+		if (0 == g_data.vir_address) {
+			ERR("can not free share memory that not malloc\n");
+			return -ENOMEM;
+		}
+		ret = platform_put_smem();
+		if (ret < 0) {
+			ERR("put share memory failed\n");
+			return ret;
+		}
+
+		break;
+	case 0x01:
+		if (0 != g_data.vir_address) {
+			ERR("alread bind\n");
+			return -EBUSY;
+		}
+
+		ret = platform_get_smem();
+		if (ret < 0) {
+			ERR("get share memory failed\n");
+			return ret;
+		}
+
+		size = (size_t)g_data.size;
+		vmem = (void *)g_data.vir_address;
+		INF("share memory info: vir: %016llX, size: %08lX\n",
+		    g_data.vir_address, size);
+
+		if ((NULL == vmem) || (0 == size)) {
+			ERR("memory malloc failed\n");
+			return -ENOMEM;
+		}
+
+		memset(vmem, 0, size);
+		psensor_smem_init((smem_head *)g_data.vir_address, g_data.size,
+				  g_def_sz);
+		INF("memory malloc 0x%XByte at %016llX\n", (uint32_t)size,
+		    g_data.vir_address);
+		break;
+	default:
+		INF("operation number not support: %d\n", enable);
+	}
+
+	g_data.enable = enable;
+	return count;
 }
 
-
-#if defined(CONFIG_ARCH_QCOM)
-/******************************************************************************
- * 以下是高通对各子系统的定义
-enum subsystem_pid {
-    PID_APSS = 0,
-    PID_MPSS = 1,
-    PID_ADSP = 2,
-    PID_SLPI = 3,
-    PID_CDSP = 5,
-    PID_WPSS = 13,
-    PID_GPU = PID_APSS,
-    PID_DISPLAY = PID_APSS,
-    PID_OTHERS = -2,
-};
-******************************************************************************/
-static ssize_t proc_freemem_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t proc_fault_inject_r(struct file *file, char __user *buf,
+				   size_t count, loff_t *ppos)
 {
-    char data[CFG_BUFSIZE];
-    uint32_t bytes;
-    int len                 = 0;
-    char *d                 = &data[0];
+	char data[512];
+	int i, wlen, len = 0;
+	char *d = (char *)&data[0];
+	smem_head *smem = (smem_head *)g_data.vir_address;
 
-    if (*ppos > 0 || count < CFG_BUFSIZE)   return 0;
+	if (g_data.vir_address == 0) {
+		ERR("vir_address not bind yet, do bind first!\n");
+		return -EIO;
+	}
 
-    bytes                   = (uint32_t)qcom_smem_get_free_space(-1);
-    len                    += snprintf(d, CFG_BUFSIZE - len, "[zone comm]\t: 0x%08X\n", bytes);
-    d                       = &data[len];
+	if (*ppos > 0 || count < sizeof(data)) {
+		return 0;
+	}
 
-    bytes                   = (uint32_t)qcom_smem_get_free_space(0);
-    len                    += snprintf(d, CFG_BUFSIZE - len, "[zone apss]\t: 0x%08X\n", bytes);
-    d                       = &data[len];
+	wlen = snprintf(d, 512 - len, "stat %d\n", smem->inject_start);
+	d += wlen;
+	len += wlen;
 
-    bytes                   = (uint32_t)qcom_smem_get_free_space(1);
-    len                    += snprintf(d, CFG_BUFSIZE - len, "[zone mpss]\t: 0x%08X\n", bytes);
-    d                       = &data[len];
+	for (i = 0; i < 16; i += 4) {
+		wlen = snprintf(d, 512 - len, "%04X %08X %08X %08X %08X\n",
+				i << 2, smem->inject_data[i],
+				smem->inject_data[i + 1],
+				smem->inject_data[i + 2],
+				smem->inject_data[i + 3]);
+		d += wlen;
+		len += wlen;
+	}
 
-    bytes                   = (uint32_t)qcom_smem_get_free_space(2);
-    len                    += snprintf(d, CFG_BUFSIZE - len, "[zone adsp]\t: 0x%08X\n", bytes);
-    d                       = &data[len];
+	if (copy_to_user(buf, data, len)) {
+		return -EFAULT;
+	}
 
-    bytes                   = (uint32_t)qcom_smem_get_free_space(3);
-    len                    += snprintf(d, CFG_BUFSIZE - len, "[zone slpi]\t: 0x%08X\n", bytes);
-
-    if(copy_to_user(buf, data, len))        return -EFAULT;
-
-    *ppos                   = len;
-    return len;
+	*ppos = len;
+	return len;
 }
 
-#elif defined(CONFIG_MTK_PLATFORM)
-
-static ssize_t proc_freemem_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+static ssize_t proc_fault_inject_w(struct file *file, const char __user *buf,
+				   size_t count, loff_t *lo)
 {
-    char data[CFG_BUFSIZE];
-    int  i, len             = 0;
-    char *d                 = &data[0];
+	int ret;
+	char data[128];
+	int32_t s[4];
+	int len = MIN(count, sizeof(data) - 1);
 
-    if (*ppos > 0 || count < CFG_BUFSIZE)   return 0;
+	if (0 == g_data.vir_address) {
+		ERR("no share memory, plese bind share memory first\n");
+		return -ENOMEM;
+	}
 
-    len                     = snprintf(d, CFG_BUFSIZE - len, "id\tphy\t \t \tsize\n");
+	memset(data, 0, sizeof(data));
+	memset(s, 0, sizeof(s));
 
-    for (i = 0; i < 16; i++) {
-        d                   = &data[len];
-        phys_addr_t phy     = scp_get_reserve_mem_phys(i);
-        phys_addr_t sz      = scp_get_reserve_mem_size(i);
-        len                += snprintf(d, CFG_BUFSIZE - len, "%d\t%016lX\t%X\n", i, phy, sz);
-    }
+	if (copy_from_user(data, buf, len)) {
+		ERR("fault injection val copy from user error\n");
+		return -EIO;
+	}
 
-    if(copy_to_user(buf, data, len))        return -EFAULT;
+	if (0 == strncmp(data, "start", 5)) {
+		fault_inject_start();
+		return count;
+	} else if (0 == strncmp(data, "reset", 5)) {
+		fault_inject_reset();
+		return count;
+	}
 
-    *ppos                   = len;
-    return len;
-}
+	ret = sscanf(data, "%d,%d,%d,%d", &s[0], &s[1], &s[2], &s[3]);
+	if (4 != ret) {
+		ret = sscanf(data, "%X,%X,%X,%X", &s[0], &s[1], &s[2], &s[3]);
+		if (4 != ret) {
+			ERR("get %d valid data but need 4 data\n", ret);
+			return -EINVAL;
+		}
+	}
 
-#else
+	if (fault_inject_append(s[0], s[1], s[2], s[3]) < 0) {
+		ERR("append fault inject data failed: %08X %08X %08X %08X\n",
+		    s[0], s[1], s[2], s[3]);
+		return -EIO;
+	} else {
+		INF("append fault inject data successed: %08X %08X %08X %08X\n",
+		    s[0], s[1], s[2], s[3]);
+	}
 
-#error Macro not defined, check definition in kernel of the SOC manufacturer, revise the code or macro.
-#error 定义的宏没有出现，请查看是否SOC厂商内核定义有变化，请修订代码或宏定义.
-
-#endif
-
-
-
-// 显示当前正在处理的通道 [0,15]
-static ssize_t proc_current_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
-{
-    char data[CFG_BUFSIZE];
-    int len             = 0;
-
-    if (*ppos > 0 || count < CFG_BUFSIZE)   return 0;
-
-    len                 = snprintf(data, CFG_BUFSIZE, "%d\n", g_data->cur_chn);
-
-    if(copy_to_user(buf, data, len))        return -EFAULT;
-
-    *ppos               = len;
-    return len;
-}
-
-static ssize_t proc_current_w(struct file *file, const char __user *buf, size_t count, loff_t *lo)
-{
-    int     len, cur_chn;
-    char    data[16];
-
-
-    memset(data, 0, sizeof(data));
-
-    len                         = MIN(count, 16);
-
-    if (copy_from_user(data, buf, len)) {
-        ERR("current val copy from user error\n");
-        return -EIO;
-    }
-
-    if (1 == sscanf(data, "%d", &cur_chn)) {
-        INF("current val input: %d\n", cur_chn);
-    } else {
-        ERR("current val input invalid\n");
-        return -EINVAL;
-    }
-
-    if (cur_chn < 0 || cur_chn > (CFG_MAX_SENSORS - 1)) {
-        ERR("current val out range\n");
-        return -EINVAL;
-    }
-
-    g_data->cur_chn         = cur_chn;
-    return count;
-}
-
-
-static ssize_t proc_bind_r(struct file *file, char __user *buf, size_t count, loff_t *ppos)
-{
-    char data[CFG_BUFSIZE];
-    int len             = 0;
-
-    if (*ppos > 0 || count < CFG_BUFSIZE)   return 0;
-
-    len                 = snprintf(data, CFG_BUFSIZE, "%d\n", g_data->enable);
-
-    if(copy_to_user(buf, data, len))        return -EFAULT;
-
-    *ppos               = len;
-    return len;
-}
-
-static ssize_t proc_bind_w(struct file *file, const char __user *buf, size_t count, loff_t *lo)
-{
-    void            *vmem;
-    int             len;
-    int             ret;
-    uint64_t        vaddr;
-    size_t          size            = 0;
-    int             enable          = 0;
-    char            data[16];
-
-    memset(data, 0, sizeof(data));
-
-    // 不允许重新分配内存
-    if (0 != g_data->vir_address) {
-        ERR("alread bind\n");
-        return -EBUSY;
-    }
-
-    len                     = MIN(count, 16);
-
-    if (copy_from_user(data, buf, len)) {
-        ERR("read bind val input error\n");
-        return -EIO;
-    }
-
-    if (1 != sscanf(data, "%d", &enable)) {
-        ERR("invalid input\n");
-        return -EINVAL;
-    }
-
-#if defined(CONFIG_ARCH_QCOM)
-
-    // 通过高通 qcom_smem_alloc 方式匹配已分配的内存
-    // 参数 3, 490 为已约定值  PID_APSS = 0,   PID_MPSS = 1,   PID_ADSP = 2,   PID_SLPI = 3,
-    ret                     = psensor_smem_get(3, 490, &vaddr, &size);
-
-    if (ret < 0) {
-        ret                 = psensor_smem_get(2, 490, &vaddr, &size);
-    }
-
-    g_data->vir_address     = (uint64_t)vaddr;
-
-    if (0 != vaddr) {
-        g_data->phy_address = (uint64_t)qcom_smem_virt_to_phys((void*)vaddr);
-    }
-    vmem                    = (void*)vaddr;
-
-#elif defined(CONFIG_MTK_PLATFORM)
-
-    // 申请内存并将其物理、虚拟地址填入 phy_address vir_address
-    // MTK 内存分配，注意是全部的内存, 所用到只占最后 64KB
-    // vaddr 使用是为了避免 -Wunused-variable
-    uint64_t smem_base_phys;
-    uint64_t smem_size;
-
-    // 测试代码
-    struct device_node *nd  = of_find_compatible_node(NULL, NULL, "mediatek,reserve-memory-scp_share");
-
-    if (nd != NULL) {
-        of_property_read_u64_index(nd, "size", 0, &smem_size);
-        INF("get size: %X\n", smem_size);
-    }
-
-    smem_base_phys          = (uint64_t)scp_get_reserve_mem_phys(0);
-    vaddr                   = (uint64_t)(size_t)ioremap_wc(smem_base_phys, smem_size);;
-    g_data->vir_address     = vaddr;
-    g_data->phy_address     = smem_base_phys;
-    size                    = smem_size;
-    vmem                    = (void*)g_data->vir_address;
-
-    INF("mtk share memory info: phy: %016lX, vir: %016lX, size: %08lX\n", smem_base_phys, g_data->vir_address, size);
-
-    // 重新计算内存
-    // 取该内存的最后    64 KB(CFG_SMEM_SZ)内存为共享内存
-    if ((NULL != vmem) && (0 != size)) {
-        g_data->vir_address = g_data->vir_address + size - CFG_SMEM_SZ;
-        g_data->phy_address = g_data->phy_address + size - CFG_SMEM_SZ;
-        size                = CFG_SMEM_SZ;
-        vmem                = (void*)g_data->vir_address;
-    }
-
-#else
-
-#error Macro not defined, check definition in kernel of the SOC manufacturer, revise the code or macro.
-#error 定义的宏没有出现，请查看是否SOC厂商内核定义有变化，请修订代码或宏定义.
-
-#endif
-
-    if ((NULL == vmem) || (0 == size)) {
-        ERR("memory malloc failed\n");
-        return -ENOMEM;
-    }
-
-    // 设置全局变量
-    g_data->size            = (uint32_t)size;
-    memset(vmem, 0, g_data->size);
-
-    // 设置初始值
-    psensor_smem_init((smem_head*)g_data->vir_address, g_data->size, g_def_sz);
-
-    INF("memory malloc 0x%XByte at %016lX(physical: %016lX)\n", size, g_data->vir_address, g_data->phy_address);
-
-    g_data->enable          = 1;
-    return count;
+	return count;
 }
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0))
-static const struct file_operations proc_data_fops =
-{
-    .read       = proc_data_r,
-    .write      = proc_data_w,
-    .open       = simple_open,
-    .owner      = THIS_MODULE,
+
+static const struct file_operations proc_data_fops = {
+	.read = proc_data_r,
+	.write = proc_data_w,
+	.open = simple_open,
+	.owner = THIS_MODULE,
 };
-static const struct file_operations proc_sizes_fops =
-{
-    .read       = proc_sizes_r,
-    .write      = proc_sizes_w,
-    .open       = simple_open,
-    .owner      = THIS_MODULE,
+
+static const struct file_operations proc_sizes_fops = {
+	.read = proc_sizes_r,
+	.write = proc_sizes_w,
+	.open = simple_open,
+	.owner = THIS_MODULE,
 };
-static const struct file_operations proc_datareset_fops =
-{
-    .write      = proc_datareset_w,
-    .open       = simple_open,
-    .owner      = THIS_MODULE,
+
+static const struct file_operations proc_datareset_fops = {
+	.write = proc_datareset_w,
+	.open = simple_open,
+	.owner = THIS_MODULE,
 };
-static const struct file_operations proc_timeleft_fops =
-{
-    .owner      = THIS_MODULE,
-    .read       = proc_timeleft_r,
-    .write      = proc_timeleft_w,
-    .open       = simple_open,
+
+static const struct file_operations proc_timeleft_fops = {
+	.owner = THIS_MODULE,
+	.read = proc_timeleft_r,
+	.write = proc_timeleft_w,
+	.open = simple_open,
 };
-static const struct file_operations proc_sst_fops =
-{
-    .owner      = THIS_MODULE,
-    .read       = proc_sst_r,
-    .write      = proc_sst_w,
-    .open       = simple_open,
+
+static const struct file_operations proc_fault_inject_fops = {
+	.owner = THIS_MODULE,
+	.read = proc_fault_inject_r,
+	.write = proc_fault_inject_w,
+	.open = simple_open,
 };
-static const struct file_operations proc_ecode_fops =
-{
-    .owner      = THIS_MODULE,
-    .read       = proc_ecode_r,
-    .write      = proc_ecode_w,
-    .open       = simple_open,
+
+static const struct file_operations proc_datatype_fops = {
+	.owner = THIS_MODULE,
+	.read = proc_datatype_r,
+	.write = proc_datatype_w,
+	.open = simple_open,
 };
-static const struct file_operations proc_datatype_fops =
-{
-    .owner      = THIS_MODULE,
-    .read       = proc_datatype_r,
-    .write      = proc_datatype_w,
-    .open       = simple_open,
+
+static const struct file_operations proc_vir_fops = {
+	.owner = THIS_MODULE,
+	.read = proc_vir_r,
+	.open = simple_open,
 };
-static const struct file_operations proc_phy_fops =
-{
-    .owner      = THIS_MODULE,
-    .read       = proc_phy_r,
-    .open       = simple_open,
+
+static const struct file_operations proc_freemem_fops = {
+	.owner = THIS_MODULE,
+	.read = proc_freemem_r,
+	.open = simple_open,
 };
-static const struct file_operations proc_vir_fops =
-{
-    .owner      = THIS_MODULE,
-    .read       = proc_vir_r,
-    .open       = simple_open,
+
+static const struct file_operations proc_current_fops = {
+	.read = proc_current_r,
+	.write = proc_current_w,
+	.open = simple_open,
+	.owner = THIS_MODULE,
 };
-static const struct file_operations proc_freemem_fops =
-{
-    .owner      = THIS_MODULE,
-    .read       = proc_freemem_r,
-    .open       = simple_open,
-};
-static const struct file_operations proc_current_fops =
-{
-    .read       = proc_current_r,
-    .write      = proc_current_w,
-    .open       = simple_open,
-    .owner      = THIS_MODULE,
-};
-static const struct file_operations proc_bind_fops =
-{
-    .read       = proc_bind_r,
-    .write      = proc_bind_w,
-    .open       = simple_open,
-    .owner      = THIS_MODULE,
+
+static const struct file_operations proc_bind_fops = {
+	.read = proc_bind_r,
+	.write = proc_bind_w,
+	.open = simple_open,
+	.owner = THIS_MODULE,
 };
 
 #else
 
-static const struct proc_ops proc_data_fops =
-{
-    .proc_read       = proc_data_r,
-    .proc_write      = proc_data_w,
-    .proc_open       = simple_open,
+static const struct proc_ops proc_data_fops = {
+	.proc_read = proc_data_r,
+	.proc_write = proc_data_w,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_sizes_fops =
-{
-    .proc_read       = proc_sizes_r,
-    .proc_write      = proc_sizes_w,
-    .proc_open       = simple_open,
+
+static const struct proc_ops proc_sizes_fops = {
+	.proc_read = proc_sizes_r,
+	.proc_write = proc_sizes_w,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_datareset_fops =
-{
-    .proc_write      = proc_datareset_w,
-    .proc_open       = simple_open,
+
+static const struct proc_ops proc_datareset_fops = {
+	.proc_write = proc_datareset_w,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_timeleft_fops =
-{
-    .proc_read       = proc_timeleft_r,
-    .proc_write      = proc_timeleft_w,
-    .proc_open       = simple_open,
+
+static const struct proc_ops proc_timeleft_fops = {
+	.proc_read = proc_timeleft_r,
+	.proc_write = proc_timeleft_w,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_sst_fops =
-{
-    .proc_read       = proc_sst_r,
-    .proc_write      = proc_sst_w,
-    .proc_open       = simple_open,
+
+static const struct proc_ops proc_fault_inject_fops = {
+	.proc_read = proc_fault_inject_r,
+	.proc_write = proc_fault_inject_w,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_ecode_fops =
-{
-    .proc_read       = proc_ecode_r,
-    .proc_write      = proc_ecode_w,
-    .proc_open       = simple_open,
+
+static const struct proc_ops proc_datatype_fops = {
+	.proc_read = proc_datatype_r,
+	.proc_write = proc_datatype_w,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_datatype_fops =
-{
-    .proc_read       = proc_datatype_r,
-    .proc_write      = proc_datatype_w,
-    .proc_open       = simple_open,
+
+static const struct proc_ops proc_vir_fops = {
+	.proc_read = proc_vir_r,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_phy_fops =
-{
-    .proc_read       = proc_phy_r,
-    .proc_open       = simple_open,
+
+static const struct proc_ops proc_freemem_fops = {
+	.proc_read = proc_freemem_r,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_vir_fops =
-{
-    .proc_read       = proc_vir_r,
-    .proc_open       = simple_open,
+
+static const struct proc_ops proc_current_fops = {
+	.proc_read = proc_current_r,
+	.proc_write = proc_current_w,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_freemem_fops =
-{
-    .proc_read       = proc_freemem_r,
-    .proc_open       = simple_open,
+
+static const struct proc_ops proc_bind_fops = {
+	.proc_read = proc_bind_r,
+	.proc_write = proc_bind_w,
+	.proc_open = simple_open,
 };
-static const struct proc_ops proc_current_fops =
-{
-    .proc_read       = proc_current_r,
-    .proc_write      = proc_current_w,
-    .proc_open       = simple_open,
-};
-static const struct proc_ops proc_bind_fops =
-{
-    .proc_read       = proc_bind_r,
-    .proc_write      = proc_bind_w,
-    .proc_open       = simple_open,
-};
+
 #endif
 
 static int __init pseduo_sensor_init(void)
 {
-    struct proc_dir_entry *dir;
+	struct proc_dir_entry *dir;
 
-    if (g_data != NULL)   {
-        ERR("driver already exist\n");
-        return -EBUSY;
-    } else {
-        g_data                  = (struct psensor_data *)kmalloc(sizeof(struct psensor_data), GFP_KERNEL);
-        if (NULL == g_data) {
-            ERR("driver malloc memory failed\n");
-            return -ENOMEM;
-        }
-    }
+	memset((void *)&g_data, 0, sizeof(struct psensor_data));
 
-    memset(g_data, 0, sizeof(struct psensor_data));
+	dir = proc_mkdir("pseudo-sensor", NULL);
 
-    dir                         = proc_mkdir("pseudo-sensor", NULL);
+	if (!dir) {
+		ERR("mkdir /proc/psensor_dir failed\n");
+		return -ENOMEM;
+	}
 
-    if (!dir) {
-        ERR("mkdir /proc/psensor_dir failed\n");
-        return -ENOMEM;
-    }
+	g_data.proc = dir;
 
-    g_data->proc                = dir;
+	proc_create_data("bind", 0664, dir, &proc_bind_fops, NULL);
+	proc_create_data("sizes", 0664, dir, &proc_sizes_fops, NULL);
+	proc_create_data("current", 0664, dir, &proc_current_fops, NULL);
+	proc_create_data("data", 0664, dir, &proc_data_fops, NULL);
+	proc_create_data("datatype", 0664, dir, &proc_datatype_fops, NULL);
+	proc_create_data("datareset", 0220, dir, &proc_datareset_fops, NULL);
+	proc_create_data("viraddr", 0444, dir, &proc_vir_fops, NULL);
+	proc_create_data("frees", 0444, dir, &proc_freemem_fops, NULL);
+	proc_create_data("timeleft", 0664, dir, &proc_timeleft_fops, NULL);
+	proc_create_data("fault_inject", 0664, dir, &proc_fault_inject_fops,
+			 NULL);
 
-    proc_create_data("bind",        0664, dir,  &proc_bind_fops, NULL);
-    proc_create_data("sizes",       0664, dir,  &proc_sizes_fops, NULL);
-    proc_create_data("current",     0664, dir,  &proc_current_fops, NULL);
-    proc_create_data("data",        0664, dir,  &proc_data_fops, NULL);
-    proc_create_data("datatype",    0664, dir,  &proc_datatype_fops, NULL);
-    proc_create_data("datareset",   0220, dir,  &proc_datareset_fops, NULL);
-    proc_create_data("phyaddr",     0444, dir,  &proc_phy_fops, NULL);
-    proc_create_data("viraddr",     0444, dir,  &proc_vir_fops, NULL);
-    proc_create_data("frees",       0444, dir,  &proc_freemem_fops, NULL);
-    proc_create_data("timeleft",    0664, dir,  &proc_timeleft_fops, NULL);
-    proc_create_data("sst",         0664, dir,  &proc_sst_fops, NULL);
-    proc_create_data("ecode",       0664, dir,  &proc_ecode_fops, NULL);
+	platform_client_init();
 
-    // 初始化定时器
-    g_timer.expires             = 0;
-    add_timer(&g_timer);                                // 添加定时器，定时器开始生效
+	INIT_DELAYED_WORK(&g_data.time_left_work, psensor_timer_left);
 
-    INF("pseduo sensor initialize successed\n");
+	INF("pseduo sensor initialize successed\n");
 
-    return 0;
+	return 0;
 }
-
-
 
 static void __exit pseduo_sensor_exit(void)
 {
-    del_timer_sync(&g_timer);                           // 卸载模块时，删除定时器
+	platform_client_release();
 
-    if (NULL == g_data) {
-        ERR("malloc memory failed?\n");
-        return;
-    }
+	cancel_delayed_work(&g_data.time_left_work);
 
-    proc_remove(g_data->proc);
+	proc_remove(g_data.proc);
 
-    if (0 != g_data->vir_address) {
-
-#if defined(CONFIG_ARCH_QCOM)
-
-    // 高通的共享内存不是由linux分配
-    // 不支持动态释放内存
-
-#elif defined(CONFIG_MTK_PLATFORM)
-
-    // MTK 的内存是静态分配并约定
-    // 内存无法动态释放
-
-#else
-
-#error Macro not defined, check definition in kernel of the SOC manufacturer, revise the code or macro.
-#error 定义的宏没有出现，请查看是否SOC厂商内核定义有变化，请修订代码或宏定义.
-
-#endif
-    }
-
-    kfree(g_data);
-    g_data          = NULL;
+	if (0 != g_data.vir_address) {
+	}
 }
-
 
 module_init(pseduo_sensor_init);
 module_exit(pseduo_sensor_exit);
-
 
 MODULE_AUTHOR("weng.yunfeng");
 MODULE_DESCRIPTION("Pseudo Sensor Driver");
