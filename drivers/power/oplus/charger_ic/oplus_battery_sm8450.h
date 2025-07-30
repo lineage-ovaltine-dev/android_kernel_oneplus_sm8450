@@ -87,6 +87,7 @@
 #define BC_PPS_OPLUS                    0x65
 #define BC_ADSP_NOTIFY_TRACK				0x66
 #define BC_ABNORMAL_PD_SVOOC_ADAPTER 0x67
+#define BC_PD_SOURCECAP_DONE 0x79
 #endif
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
@@ -100,6 +101,8 @@
 #define USB_OTG_CURR_LIMIT_MAX   3000
 #define USB_OTG_CURR_LIMIT_HIGH  1700
 #define USB_OTG_REAL_SOC_MIN     10
+#define FFC_FULL_DELTA_ITEARM_MA 400
+#define FFC_FULL_DELTA_ITEARM_MA_LOW	400
 #endif
 
 /* Generic definitions */
@@ -207,6 +210,8 @@ enum battery_property_id {
 	BATT_ZY0603_CHECK_RC_SFR,
 	BATT_ZY0603_SOFT_RESET,
 	BATT_AFI_UPDATE_DONE,
+	BATT_BAT_FULL_VOL_SET,
+	BATT_BAT_FULL_CURR_SET,
 #endif
 	BATT_PROP_MAX,
 };
@@ -270,6 +275,9 @@ enum usb_property_id {
 #ifdef OPLUS_FEATURE_CHG_BASIC
 	USB_PPS_FORCE_SVOOC,
 #endif /*OPLUS_FEATURE_CHG_BASIC*/
+	USB_SCOPE,
+	USB_CONNECTOR_TYPE,
+	F_ACTIVE,
 	USB_PROP_MAX,
 };
 
@@ -425,6 +433,8 @@ struct oplus_custom_gpio_pinctrl {
 	struct pinctrl_state	*usbtemp_r_gpio_default;
 	struct pinctrl			*subboard_temp_gpio_pinctrl;
 	struct pinctrl_state	*subboard_temp_gpio_default;
+	struct pinctrl		*batt1_con_therm_gpio_pinctrl;
+	struct pinctrl_state	*batt1_con_therm_gpio_default;
 	struct pinctrl		*otg_boost_en_pinctrl;
 	struct pinctrl_state	*otg_boost_en_active;
 	struct pinctrl_state	*otg_boost_en_sleep;
@@ -498,6 +508,7 @@ struct battery_chg_dev {
 	struct delayed_work	recheck_input_current_work;
 	struct delayed_work	apsd_done_work;
 	struct delayed_work	unsuspend_usb_work;
+	struct delayed_work	pd_set_aicl_work;
 /*#ifdef OPLUS_CHG_OP_DEF*/
 	struct delayed_work ctrl_lcm_frequency;
 /*#endif*/
@@ -565,6 +576,10 @@ struct battery_chg_dev {
 	struct completion    bcc_read_ack;
 	struct oem_read_buffer_resp_msg  bcc_read_buffer_dump;
 	int otg_scheme;
+	bool pmic_is_pm7250b;
+	int ffc_full_delta_iterm_ma;
+	int ffc_full_delta_iterm_ma_low;
+	bool common_charge_icl_support;
 	int otg_boost_src;
 	int otg_curr_limit_max;
 	int otg_curr_limit_high;
@@ -587,6 +602,12 @@ struct battery_chg_dev {
 	oplus_chg_track_trigger *icl_err_load_trigger;
 	struct delayed_work icl_err_load_trigger_work;
 
+	struct mutex track_adsp_err_lock;
+	u32 debug_pmic_glink_err;
+	bool adsp_err_uploading;
+	oplus_chg_track_trigger *adsp_err_load_trigger;
+	struct delayed_work adsp_err_load_trigger_work;
+
 	struct mutex adsp_track_read_buffer_lock;
 	struct completion adsp_track_read_ack;
 	struct adsp_track_read_resp_msg adsp_track_read_buffer;
@@ -598,6 +619,7 @@ struct battery_chg_dev {
 	struct mutex	pps_read_buffer_lock;
 	struct completion	 pps_read_ack;
 	struct oem_read_buffer_resp_msg  pps_read_buffer_dump;
+	bool plugin_already_run;
 #endif
 	/* To track the driver initialization status */
 	bool				initialized;

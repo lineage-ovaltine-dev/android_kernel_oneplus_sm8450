@@ -24,9 +24,15 @@
 #include <linux/version.h>
 #include <linux/qti_power_supply.h>
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
 #include "../../../../../../kernel/msm-5.4/drivers/usb/typec/tcpc/inc/tcpci.h"
 #include "../../../../../../kernel/msm-5.4/drivers/usb/typec/tcpc/inc/tcpm.h"
 #include "../../../../../../kernel/msm-5.4/drivers/usb/typec/tcpc/inc/tcpci_typec.h"
+#else
+#include "../pd_ext/inc/tcpci.h"
+#include "../pd_ext/inc/tcpm.h"
+#include "../pd_ext/inc/tcpci_typec.h"
+#endif
 #include "../oplus_charger.h"
 #include "oplus_sy6974b.h"
 #include "oplus_sy6970_reg.h"
@@ -39,11 +45,25 @@
 /* 10ms * 100 = 1000ms = 1s */
 #define USB_TYPE_POLLING_INTERVAL	10
 #define USB_TYPE_POLLING_CNT_MAX	200
+#define USB_TYPE_POLLING_CNT            10
+
 #define UNIT_TRANS_1000			1000
+
+#define PORT_ERROR 0
+#define PORT_A 1
+#define PORT_PD_WITH_USB 2
+#define PORT_PD_WITHOUT_USB 3
+#define PD_DEFAULT_CURRENT_MA 3000
 
 extern void oplus_otg_enable_by_buckboost(void);
 extern void oplus_otg_disable_by_buckboost(void);
 extern void tcpc_late_sync(void);
+#ifdef OPLUS_CHG_SEPARATE_MUSE
+extern void oplus_set_splitchg_request_dpdm(bool enable);
+extern void oplus_notify_pd_event(unsigned long evt);
+extern void oplus_chip_otg_enable(void);
+extern void oplus_chip_otg_disable(void);
+#endif
 
 enum dr {
 	DR_IDLE,
@@ -246,6 +266,10 @@ static inline void start_usb_host(struct rt_pd_manager_data *rpmd)
 
 static inline void stop_usb_peripheral(struct rt_pd_manager_data *rpmd)
 {
+	dev_err(rpmd->dev, "%s\n", __func__);
+#ifdef OPLUS_CHG_SEPARATE_MUSE
+	oplus_set_splitchg_request_dpdm(false);
+#endif
 	extcon_set_state_sync(rpmd->extcon, EXTCON_USB, false);
 }
 
@@ -256,6 +280,7 @@ static inline void start_usb_peripheral(struct rt_pd_manager_data *rpmd)
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)) */
 	union extcon_property_value val = {.intval = 0};
 
+	dev_err(rpmd->dev, "%s\n", __func__);
 	val.intval = tcpm_inquire_cc_polarity(rpmd->tcpc);
 	extcon_set_property(rpmd->extcon, EXTCON_USB,
 			    EXTCON_PROP_USB_TYPEC_POLARITY, val);
@@ -303,6 +328,27 @@ bool oplus_pd_without_usb(void)
 	if (!tcpm_inquire_pd_connected(g_rpmd->tcpc))
 		return false;
 	return (tcpm_inquire_dpm_flags(g_rpmd->tcpc) & DPM_FLAGS_PARTNER_USB_COMM) ? false : true;
+}
+
+int oplus_check_pd_usb_type(void)
+{
+	struct tcpc_device *tcpc;
+	int ret = 0;
+
+	tcpc = tcpc_dev_get_by_name("type_c_port0");
+	if (!tcpc) {
+		chg_err("get type_c_port0 fail\n");
+		return PORT_ERROR;
+	}
+
+	if (!tcpm_inquire_pd_connected(tcpc))
+		return PORT_A;
+
+	ret = tcpm_inquire_dpm_flags(tcpc);
+	if (ret & DPM_FLAGS_PARTNER_USB_COMM)
+		return PORT_PD_WITH_USB;
+
+	return PORT_PD_WITHOUT_USB;
 }
 
 bool oplus_pd_connected(void)
@@ -422,6 +468,7 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 	enum typec_pwr_opmode opmode = TYPEC_PWR_MODE_USB;
 	uint32_t partner_vdos[VDO_MAX_NR];
 	union power_supply_propval val = {.intval = 0};
+	static bool otg_enable = false;
 	struct oplus_chg_chip *g_oplus_chip = oplus_chg_get_chg_struct();
 
 	switch (event) {
@@ -443,19 +490,38 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 			}
 		}
 
-		if (noti->vbus_state.type & TCP_VBUS_CTRL_PD_DETECT)
-			pd_sink_set_vol_and_cur(rpmd, rpmd->sink_mv_new,
-						rpmd->sink_ma_new,
+		if (noti->vbus_state.type & TCP_VBUS_CTRL_PD_DETECT) {
+			pd_sink_set_vol_and_cur(rpmd, rpmd->sink_mv_new, rpmd->sink_ma_new,
 						noti->vbus_state.type);
+			if (g_oplus_chip && g_oplus_chip->chg_ops && g_oplus_chip->chg_ops->set_pd_aicr) {
+				ret = g_oplus_chip->chg_ops->set_pd_aicr(rpmd->sink_ma_new, true);
+				if (ret == 0)
+					dev_info(rpmd->dev, " %s set pd aicr from tcp ma= %d\n",
+						 __func__, rpmd->sink_ma_new);
+			}
+		}
 		break;
 	case TCP_NOTIFY_SOURCE_VBUS:
 		dev_info(rpmd->dev, "%s source vbus %dmV\n",
 				    __func__, noti->vbus_state.mv);
 		/* enable/disable OTG power output */
 		if (noti->vbus_state.mv) {
+#ifdef OPLUS_CHG_SEPARATE_MUSE
+			oplus_chip_otg_enable();
+#else
 			oplus_otg_enable_by_buckboost();
+#endif
+
+			otg_enable = true;
 		} else {
-			oplus_otg_disable_by_buckboost();
+			if (otg_enable) {
+#ifdef OPLUS_CHG_SEPARATE_MUSE
+				oplus_chip_otg_disable();
+#else
+				oplus_otg_disable_by_buckboost();
+#endif
+			}
+			otg_enable = false;
 		}
 		break;
 	case TCP_NOTIFY_TYPEC_STATE:
@@ -473,6 +539,8 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 			 * start charger type detection,
 			 * and enable device connection
 			 */
+			if (g_oplus_chip && g_oplus_chip->chg_ops && g_oplus_chip->chg_ops->set_pd_aicr)
+				g_oplus_chip->chg_ops->set_pd_aicr(PD_DEFAULT_CURRENT_MA, false);
 			cancel_delayed_work_sync(&rpmd->usb_dwork);
 			rpmd->usb_dr = DR_DEVICE;
 			rpmd->usb_type_polling_cnt = 0;
@@ -481,9 +549,11 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 					      USB_TYPE_POLLING_INTERVAL));
 			typec_set_data_role(rpmd->typec_port, TYPEC_DEVICE);
 			typec_set_pwr_role(rpmd->typec_port, TYPEC_SINK);
-			typec_set_pwr_opmode(rpmd->typec_port,
-					     noti->typec_state.rp_level -
-					     TYPEC_CC_VOLT_SNK_DFT);
+			if (((noti->typec_state.rp_level - TYPEC_CC_VOLT_SNK_DFT) >= TYPEC_PWR_MODE_USB) &&
+			    ((noti->typec_state.rp_level - TYPEC_CC_VOLT_SNK_DFT) <= TYPEC_PWR_MODE_PD))
+				typec_set_pwr_opmode(rpmd->typec_port,
+							noti->typec_state.rp_level -
+							TYPEC_CC_VOLT_SNK_DFT);
 			typec_set_vconn_role(rpmd->typec_port, TYPEC_SINK);
 		} else if ((old_state == TYPEC_ATTACHED_SNK ||
 			    old_state == TYPEC_ATTACHED_NORP_SRC ||
@@ -495,6 +565,8 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 			 * report charger plug-out,
 			 * and disable device connection
 			 */
+			if (g_oplus_chip && g_oplus_chip->chg_ops && g_oplus_chip->chg_ops->set_pd_aicr)
+				g_oplus_chip->chg_ops->set_pd_aicr(PD_DEFAULT_CURRENT_MA, false);
 			cancel_delayed_work_sync(&rpmd->usb_dwork);
 			rpmd->usb_dr = DR_IDLE;
 			schedule_delayed_work(&rpmd->usb_dwork, 0);
@@ -641,7 +713,10 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 		if (noti->swap_state.new_role == PD_ROLE_SINK) {
 			dev_info(rpmd->dev, "%s swap power role to sink\n",
 					    __func__);
-			oplus_set_prswap(true);
+			if (g_oplus_chip && g_oplus_chip->chg_ops &&
+			    g_oplus_chip->chg_ops->set_prswap)
+				g_oplus_chip->chg_ops->set_prswap(true);
+			/*oplus_set_prswap(true);*/
 			/*
 			 * report charger plug-in without charger type detection
 			 * to not interfering with USB2.0 communication
@@ -712,10 +787,18 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 				    __func__, noti->pd_state.connected);
 		switch (noti->pd_state.connected) {
 		case PD_CONNECT_NONE:
+#ifdef OPLUS_CHG_SEPARATE_MUSE
+			oplus_notify_pd_event(PD_CONNECT_NONE);
+#else
 			oplus_set_pd_active(QTI_POWER_SUPPLY_PD_INACTIVE);
+#endif
 			break;
 		case PD_CONNECT_HARD_RESET:
+#ifdef OPLUS_CHG_SEPARATE_MUSE
+			oplus_notify_pd_event(PD_CONNECT_HARD_RESET);
+#else
 			oplus_set_pd_active(QTI_POWER_SUPPLY_PD_INACTIVE);
+#endif
 			break;
 		case PD_CONNECT_PE_READY_SNK:
 		case PD_CONNECT_PE_READY_SNK_PD30:
@@ -727,7 +810,11 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 			smblib_set_prop(rpmd,
 				POWER_SUPPLY_PROP_PD_USB_SUSPEND_SUPPORTED,
 					&val);
+#ifdef OPLUS_CHG_SEPARATE_MUSE
+			oplus_notify_pd_event(noti->pd_state.connected);
+#else
 			oplus_set_pd_active(QTI_POWER_SUPPLY_PD_ACTIVE);
+#endif
 			oplus_get_adapter_svid();
 			if (g_oplus_chip
 					&& g_oplus_chip->chg_ops
@@ -763,7 +850,11 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 			smblib_set_prop(rpmd,
 				POWER_SUPPLY_PROP_PD_USB_SUSPEND_SUPPORTED,
 					&val);
+#ifdef OPLUS_CHG_SEPARATE_MUSE
+			oplus_notify_pd_event(PD_CONNECT_PE_READY_SNK_APDO);
+#else
 			oplus_set_pd_active(QTI_POWER_SUPPLY_PD_PPS_ACTIVE);
+#endif
 			oplus_get_adapter_svid();
 			if (g_oplus_chip
 					&& g_oplus_chip->chg_ops
@@ -781,6 +872,7 @@ static int pd_tcp_notifier_call(struct notifier_block *nb,
 					     TYPEC_PWR_MODE_PD);
 			if (!rpmd->partner)
 				break;
+			oplus_chg_pps_get_source_cap();
 			ret = tcpm_inquire_pd_partner_inform(rpmd->tcpc,
 							     partner_vdos);
 			if (ret != TCPM_SUCCESS)

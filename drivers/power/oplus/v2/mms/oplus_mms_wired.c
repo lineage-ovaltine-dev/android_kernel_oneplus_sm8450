@@ -14,21 +14,31 @@
 #include <linux/list.h>
 #include <linux/kthread.h>
 #include <linux/usb/typec.h>
+#ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 #include <soc/oplus/system/boot_mode.h>
 #include <soc/oplus/device_info.h>
 #include <soc/oplus/system/oplus_project.h>
+#endif
 #include <oplus_chg_module.h>
 #include <oplus_chg.h>
 #include <oplus_chg_voter.h>
 #include <oplus_chg_ic.h>
 #include <oplus_chg_vooc.h>
 #include <oplus_chg_comm.h>
+#include <oplus_batt_bal.h>
 #include <oplus_mms.h>
 #include <oplus_mms_gauge.h>
 #include <oplus_chg_monitor.h>
 #include <oplus_mms_wired.h>
+#include <oplus_chg_wired.h>
+#include <oplus_chg_cpa.h>
+#include <oplus_chg_ufcs.h>
+#include <oplus_chg_wls.h>
 
 #include "../charger_ic/op_charge.h"
+
+#define ONLINE_STATUS_ERR_CHECK_DELAY_MS	1000
+#define ONLINE_STATUS_ERR_CHECK_MAX		5
 
 enum oplus_usbtemp_timer_stage {
 	OPLUS_USBTEMP_TIMER_STAGE0 = 0,
@@ -38,9 +48,11 @@ enum oplus_usbtemp_timer_stage {
 struct oplus_usbtemp_spec_config {
 	int usbtemp_batt_temp_low;
 	int usbtemp_batt_temp_high;
+	int usbtemp_batt_temp_over_hot;
 	int usbtemp_ntc_temp_low;
 	int usbtemp_ntc_temp_high;
 	int usbtemp_temp_gap_low_with_batt_temp;
+	int usbtemp_temp_gap_with_batt_temp_in_over_hot;
 	int usbtemp_temp_gap_high_with_batt_temp;
 	int usbtemp_temp_gap_low_without_batt_temp;
 	int usbtemp_temp_gap_high_without_batt_temp;
@@ -48,6 +60,7 @@ struct oplus_usbtemp_spec_config {
 	int usbtemp_rise_fast_temp_high;
 	int usbtemp_rise_fast_temp_count_low;
 	int usbtemp_rise_fast_temp_count_high;
+	bool support_hot_enter_kpoc;
 
 	int usbtemp_cool_down_ntc_low;
 	int usbtemp_cool_down_ntc_high;
@@ -71,6 +84,14 @@ struct oplus_usbtemp_spec_config {
 	int usbtemp_cool_down_recovery_temp_second_gap;
 	int usbtemp_max_temp_thr;
 	int usbtemp_temp_up_time_thr;
+	int usbtemp_otg_cc_boot_current_limit;
+};
+
+struct oplus_mms_wired_abnormal_monitor {
+	unsigned int err_code;
+	int online_status_err_count;
+
+	struct delayed_work online_status_err_work;
 };
 
 struct oplus_mms_wired {
@@ -82,9 +103,16 @@ struct oplus_mms_wired {
 	struct oplus_mms *vooc_topic;
 	struct oplus_mms *comm_topic;
 	struct oplus_mms *err_topic;
+	struct oplus_mms *cpa_topic;
+	struct oplus_mms *ufcs_topic;
+	struct oplus_mms *wls_topic;
+	struct oplus_mms *batt_bal_topic;
 	struct mms_subscribe *gauge_subs;
 	struct mms_subscribe *vooc_subs;
 	struct mms_subscribe *comm_subs;
+	struct mms_subscribe *cpa_subs;
+	struct mms_subscribe *ufcs_subs;
+	struct mms_subscribe *wls_subs;
 
 	struct votable *chg_icl_votable;
 	struct votable *chg_suspend_votable;
@@ -92,6 +120,11 @@ struct oplus_mms_wired {
 	struct votable *cool_down_votable;
 	struct votable *pd_svooc_votable;
 	struct votable *vooc_chg_auto_mode_votable;
+	struct votable *fv_max_votable;
+	struct votable *fv_min_votable;
+	struct votable *vooc_curr_votable;
+	struct votable *ufcs_curr_votable;
+	struct votable *otg_disable_votable;
 
 	struct delayed_work mms_wired_init_work;
 	struct delayed_work usbtemp_recover_work;
@@ -102,13 +135,15 @@ struct oplus_mms_wired {
 	struct work_struct err_handler_work;
 	struct work_struct plugin_handler_work;
 	struct work_struct chg_type_change_handler_work;
+	struct work_struct cpa_chg_type_change_handler_work;
 	struct work_struct gauge_update_work;
-	struct work_struct otg_enable_handler_work;
+	struct delayed_work otg_enable_handler_work;
 	struct work_struct voltage_change_work;
 	struct work_struct current_change_work;
 	struct work_struct bc12_completed_work;
 	struct work_struct data_role_changed_handler_work;
 	struct work_struct back_ui_soc_work;
+	struct work_struct otg_enable_pending_work;
 
 	struct wakeup_source *usbtemp_wakelock;
 	struct adc_vol_temp_info *adc_vol_temp_info;
@@ -117,9 +152,12 @@ struct oplus_mms_wired {
 	struct alarm usbtemp_alarm_timer;
 	struct work_struct usbtemp_restart_work;
 	struct oplus_usbtemp_spec_config usbtemp_spec;
+	struct oplus_mms_wired_abnormal_monitor wam;
+	struct power_supply *batt_psy;
 
 	int vbat_mv;
 	int batt_temp;
+	int batt_realy_temp;
 	int batt_curr;
 	int shell_temp;
 	int usbtemp_volt_l;
@@ -131,6 +169,7 @@ struct oplus_mms_wired {
 	enum oplus_usbtemp_timer_stage usbtemp_timer_stage;
 	bool support_usbtemp_protect_v2;
 	bool new_usbtemp_cool_down_support;
+	bool high_temp_scheme;
 	int usbtemp_curr_status;
 	int usbtemp_batt_current;
 	int usbtemp_pre_batt_current;
@@ -145,6 +184,7 @@ struct oplus_mms_wired {
 	bool dischg_flag;
 	bool usbtemp_check;
 	bool otg_enable;
+	bool otg_disbale_status;
 	bool charge_suspend;
 	bool charging_disable;
 	bool bc12_completed;
@@ -159,6 +199,16 @@ struct oplus_mms_wired {
 	int bcc_cool_down;
 	struct mutex bcc_curr_done_mutex;
 	int bcc_curr_done;
+
+	bool cpa_support;
+	bool ufcs_online;
+	bool wls_online;
+	bool otg_enable_pending;
+	bool support_wlsotg_non_coexistence;
+
+	int wls_upgrading;
+	bool otg_online_status;
+	struct work_struct wls_upgrading_work;
 };
 
 static struct oplus_mms_wired *g_mms_wired;
@@ -172,9 +222,11 @@ static struct oplus_mms_wired *g_mms_wired;
 
 #define OPCHG_USBTEMP_BATT_TEMP_LOW			50
 #define OPCHG_USBTEMP_BATT_TEMP_HIGH			50
+#define OPCHG_USBTEMP_BATT_TEMP_OVER_HOT		60
 #define OPCHG_USBTEMP_NTC_TEMP_LOW			57
 #define OPCHG_USBTEMP_NTC_TEMP_HIGH			69
 #define OPCHG_USBTEMP_GAP_LOW_WITH_BATT_TEMP		7
+#define OPCHG_USBTEMP_GAP_WITH_BATT_TEMP_IN_OVER_HOT	15
 #define OPCHG_USBTEMP_GAP_HIGH_WITH_BATT_TEMP		12
 #define OPCHG_USBTEMP_GAP_LOW_WITHOUT_BATT_TEMP		12
 #define OPCHG_USBTEMP_GAP_HIGH_WITHOUT_BATT_TEMP	24
@@ -191,6 +243,7 @@ static struct oplus_mms_wired *g_mms_wired;
 #define OPCHG_USBTEMP_COOL_DOWN_RECOVER_NTC_HIGH	60
 #define OPCHG_USBTEMP_COOL_DOWN_RECOVER_GAP_LOW		6
 #define OPCHG_USBTEMP_COOL_DOWN_RECOVER_GAP_HIGH	15
+#define OPCHG_USBTEMP_OTG_CC_BOOT_CURRENT_LIMIT		1300000
 
 #define NORMAL_CURRENT_MA		2000
 #define USBTEMP_RECOVER_INTERVAL	(14400 * 1000) /*4 hours*/
@@ -239,6 +292,41 @@ __maybe_unused static int voltage_max_table_mv[OPLUS_CHG_USB_TYPE_MAX] = {
 	10000,	/* OPLUS_CHG_USB_TYPE_UFCS TODO:power */
 };
 
+static const char *const oplus_wired_chg_type_text[] = {
+	[OPLUS_CHG_USB_TYPE_UNKNOWN] = "unknown",
+	[OPLUS_CHG_USB_TYPE_SDP] = "sdp",
+	[OPLUS_CHG_USB_TYPE_DCP] = "dcp",
+	[OPLUS_CHG_USB_TYPE_CDP] = "cdp",
+	[OPLUS_CHG_USB_TYPE_ACA] = "aca",
+	[OPLUS_CHG_USB_TYPE_C] = "type-c",
+	[OPLUS_CHG_USB_TYPE_PD] = "pd",
+	[OPLUS_CHG_USB_TYPE_PD_DRP] = "pd_drp",
+	[OPLUS_CHG_USB_TYPE_PD_PPS] = "pps",
+	[OPLUS_CHG_USB_TYPE_PD_SDP] = "pd_sdp",
+	[OPLUS_CHG_USB_TYPE_APPLE_BRICK_ID] = "ocp",
+	[OPLUS_CHG_USB_TYPE_QC2] = "qc2",
+	[OPLUS_CHG_USB_TYPE_QC3] = "qc3",
+	[OPLUS_CHG_USB_TYPE_VOOC] = "vooc",
+	[OPLUS_CHG_USB_TYPE_SVOOC] = "svooc",
+	[OPLUS_CHG_USB_TYPE_UFCS] = "ufcs",
+	[OPLUS_CHG_USB_TYPE_MAX] = "invalid",
+};
+
+const char *oplus_wired_get_chg_type_str(enum oplus_chg_usb_type type)
+{
+	if ((type < OPLUS_CHG_USB_TYPE_UNKNOWN) || (type >= OPLUS_CHG_USB_TYPE_MAX))
+		type = OPLUS_CHG_USB_TYPE_MAX;
+	return oplus_wired_chg_type_text[type];
+}
+
+__maybe_unused static bool
+is_batt_psy_available(struct oplus_mms_wired *chip)
+{
+	if (!chip->batt_psy)
+		chip->batt_psy = power_supply_get_by_name("battery");
+	return !!chip->batt_psy;
+}
+
 __maybe_unused static bool
 is_chg_icl_votable_available(struct oplus_mms_wired *chip)
 {
@@ -272,6 +360,22 @@ is_cool_down_votable_available(struct oplus_mms_wired *chip)
 }
 
 __maybe_unused static bool
+is_vooc_curr_votable_available(struct oplus_mms_wired *chip)
+{
+	if (!chip->vooc_curr_votable)
+		chip->vooc_curr_votable = find_votable("VOOC_CURR");
+	return !!chip->vooc_curr_votable;
+}
+
+__maybe_unused static bool
+is_ufcs_curr_votable_available(struct oplus_mms_wired *chip)
+{
+	if (!chip->ufcs_curr_votable)
+		chip->ufcs_curr_votable = find_votable("UFCS_CURR");
+	return !!chip->ufcs_curr_votable;
+}
+
+__maybe_unused static bool
 is_pd_svooc_votable_available(struct oplus_mms_wired *chip)
 {
 	if (!chip->pd_svooc_votable)
@@ -289,12 +393,39 @@ is_err_topic_available(struct oplus_mms_wired *chip)
 }
 
 __maybe_unused static bool
+is_batt_bal_topic_available(struct oplus_mms_wired *chip)
+{
+	if (!chip->batt_bal_topic)
+		chip->batt_bal_topic = oplus_mms_get_by_name("batt_bal");
+
+	return !!chip->batt_bal_topic;
+}
+
+__maybe_unused static bool
 is_vooc_chg_auto_mode_votable_available(struct oplus_mms_wired *chip)
 {
 	if (!chip->vooc_chg_auto_mode_votable)
 		chip->vooc_chg_auto_mode_votable =
 			find_votable("VOOC_CHG_AUTO_MODE");
 	return !!chip->vooc_chg_auto_mode_votable;
+}
+
+__maybe_unused static bool
+is_fv_max_votable_available(struct oplus_mms_wired *chip)
+{
+	if (!chip->fv_max_votable)
+		chip->fv_max_votable =
+			find_votable("FV_MAX");
+	return !!chip->fv_max_votable;
+}
+
+__maybe_unused static bool
+is_fv_min_votable_available(struct oplus_mms_wired *chip)
+{
+	if (!chip->fv_min_votable)
+		chip->fv_min_votable =
+			find_votable("FV_MIN");
+	return !!chip->fv_min_votable;
 }
 
 int oplus_wired_get_charger_cycle(void)
@@ -314,8 +445,6 @@ int oplus_wired_get_charger_cycle(void)
 	if (rc < 0) {
 		if (rc != -ENOTSUPP)
 			chg_err("error: get charger cycle, rc=%d\n", rc);
-	} else {
-		chg_info("charger_cycle = %d\n", cycle);
 	}
 
 	return cycle;
@@ -397,14 +526,14 @@ int oplus_wired_set_icl(int icl_ma, bool step)
 		icl_ma = 0;
 		step = false;
 	}
-
+#ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 	if ((get_eng_version() == HIGH_TEMP_AGING || get_eng_version() == AGING) &&
 			(oplus_wired_get_chg_type() != OPLUS_CHG_USB_TYPE_CDP &&
 			 oplus_wired_get_chg_type() != OPLUS_CHG_USB_TYPE_SDP)) {
 		icl_ma = NORMAL_CURRENT_MA;
 		chg_err("HIGH_TEMP_AGING/AGING, set input_limit 2A\n");
 	}
-
+#endif
 	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_BUCK_SET_ICL,
 			       false, step, icl_ma);
 	if (rc < 0)
@@ -467,6 +596,29 @@ int oplus_wired_set_fcc(int fcc_ma)
 	else
 		chg_info("set fcc to %d\n", fcc_ma);
 	mutex_unlock(&chip->fcc_lock);
+
+	return rc;
+}
+
+int oplus_wired_set_aicl_point(void)
+{
+	int rc = 0;
+	int vbatt = 0;
+	struct oplus_mms_wired *chip = g_mms_wired;
+
+	if (!chip) {
+		chg_err("chip is NULL!\n");
+		return -ENODEV;
+	}
+
+	vbatt = oplus_gauge_get_batt_mvolts();
+	rc = oplus_chg_ic_func(chip->buck_ic,
+				OPLUS_IC_FUNC_BUCK_SET_AICL_POINT,
+				vbatt);
+	if (rc < 0)
+		chg_err("set aicl to %d error, rc=%d\n", vbatt, rc);
+	else
+		chg_debug("set aicl to %d\n", vbatt);
 
 	return rc;
 }
@@ -571,6 +723,31 @@ bool oplus_wired_input_is_enable(void)
 	return !enable;
 }
 
+static void oplus_wired_set_charging_disable(
+		struct oplus_mms_wired *chip, bool disable)
+{
+	int rc;
+	struct mms_msg *msg;
+
+	if (chip->charging_disable == disable)
+		return;
+
+	chip->charging_disable = disable;
+	msg = oplus_mms_alloc_msg(MSG_TYPE_ITEM, MSG_PRIO_MEDIUM,
+				  WIRED_ITEM_CHARGING_DISABLE);
+	if (msg == NULL) {
+		chg_err("alloc msg error\n");
+		return;
+	}
+	rc = oplus_mms_publish_msg(chip->wired_topic, msg);
+	if (rc < 0) {
+		chg_err("publish charging disable error, rc=%d\n", rc);
+		kfree(msg);
+	}
+
+	chg_info("charging_disable=%d\n", chip->charging_disable);
+}
+
 int oplus_wired_output_enable(bool enable)
 {
 	int rc = 0;
@@ -582,9 +759,15 @@ int oplus_wired_output_enable(bool enable)
 		return -ENODEV;
 	}
 
+	oplus_wired_set_charging_disable(chip, !enable);
+
 	if(enable && !hw_init) {
 		hw_init = true;
 		oplus_wired_hardware_init(chip);
+		if (is_fv_max_votable_available(chip))
+			rerun_election(chip->fv_max_votable, false);
+		if (is_fv_min_votable_available(chip))
+			rerun_election(chip->fv_min_votable, false);
 	} else {
 		hw_init = enable;
 	}
@@ -597,8 +780,6 @@ int oplus_wired_output_enable(bool enable)
 			enable ? "enable" : "disable", rc);
 	else
 		chg_info("%s wired output\n", enable ? "enable" : "disable");
-
-	chip->charging_disable = !enable;
 
 	return rc;
 }
@@ -668,6 +849,27 @@ int oplus_wired_set_fv(int fv_mv)
 	return rc;
 }
 
+int oplus_wired_get_fv(int *fv_mv)
+{
+	int rc = 0;
+	struct oplus_mms_wired *chip = g_mms_wired;
+
+	if (chip == NULL) {
+		chg_err("chip is NULL");
+		return -ENODEV;
+	}
+
+	rc = oplus_chg_ic_func(chip->buck_ic,
+			       OPLUS_IC_FUNC_BUCK_GET_FV,
+			       fv_mv);
+	if (rc < 0) {
+		chg_err("can't get fv, rc=%d\n", rc);
+		return rc;
+	}
+
+	return rc;
+}
+
 int oplus_wired_set_iterm(int iterm_ma)
 {
 	int rc = 0;
@@ -732,10 +934,9 @@ int oplus_wired_get_ibus(void)
 	return ibus_ma;
 }
 
-int oplus_wired_get_chg_type(void)
+static int oplus_wired_get_real_chg_type(struct oplus_mms_wired *chip)
 {
 	int rc = 0;
-	struct oplus_mms_wired *chip = g_mms_wired;
 	int type;
 
 	if (chip == NULL) {
@@ -755,7 +956,7 @@ int oplus_wired_get_chg_type(void)
 		type = OPLUS_CHG_USB_TYPE_UNKNOWN;
 	}
 
-	if (chip->wired_online) {
+	if (!chip->cpa_support && chip->wired_online) {
 		if (sid_to_adapter_chg_type(chip->vooc_sid) == CHARGER_TYPE_VOOC)
 			type = OPLUS_CHG_USB_TYPE_VOOC;
 		else if (sid_to_adapter_chg_type(chip->vooc_sid) == CHARGER_TYPE_SVOOC)
@@ -763,6 +964,29 @@ int oplus_wired_get_chg_type(void)
 	}
 
 	return type;
+}
+
+int oplus_wired_get_chg_type(void)
+{
+	union mms_msg_data data = { 0 };
+	struct oplus_mms_wired *chip = g_mms_wired;
+	int rc;
+
+	if (chip == NULL) {
+		chg_err("chip is NULL");
+		return OPLUS_CHG_USB_TYPE_UNKNOWN;
+	}
+
+	if (chip->cpa_topic == NULL)
+		return oplus_wired_get_real_chg_type(chip);
+
+	rc = oplus_mms_get_item_data(chip->cpa_topic, CPA_ITEM_CHG_TYPE, &data, false);
+	if (rc < 0) {
+		chg_err("can't get charger type by cpa, rc=%d\n", rc);
+		return OPLUS_CHG_USB_TYPE_UNKNOWN;
+	}
+
+	return data.intval;
 }
 
 int oplus_wired_otg_boost_enable(bool enable)
@@ -867,9 +1091,7 @@ int oplus_wired_aicl_rerun(void)
 	}
 
 	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_BUCK_AICL_RERUN);
-	if (rc < 0)
-		chg_err("can't rerun aicl, rc=%d\n", rc);
-	chg_info("rerun aicl\n");
+	chg_info("rerun aicl, rc = %d\n", rc);
 
 	return rc;
 }
@@ -927,7 +1149,7 @@ int oplus_wired_get_hw_detect(void)
 
 	rc = oplus_chg_ic_func(chip->buck_ic,
 			       OPLUS_IC_FUNC_BUCK_GET_HW_DETECT,
-			       &hw_detect);
+			       &hw_detect, false);
 	if (rc < 0) {
 		chg_err("can't get hw detect status, rc=%d\n", rc);
 		if (rc == -ENOTSUPP)
@@ -940,6 +1162,34 @@ int oplus_wired_get_hw_detect(void)
 		return CC_DETECT_PLUGIN;
 	else
 		return CC_DETECT_NOTPLUG;
+}
+
+int oplus_wired_get_hw_detect_recheck(void)
+{
+        int rc = 0;
+        struct oplus_mms_wired *chip = g_mms_wired;
+        int hw_detect;
+
+        if (chip == NULL) {
+                chg_err("chip is NULL");
+                return 0;
+        }
+
+        rc = oplus_chg_ic_func(chip->buck_ic,
+                               OPLUS_IC_FUNC_BUCK_GET_HW_DETECT,
+                               &hw_detect, true);
+        if (rc < 0) {
+                chg_err("can't get hw detect status, rc=%d\n", rc);
+                if (rc == -ENOTSUPP)
+                        return CC_DETECT_NULL;
+                else
+                        return rc;
+        }
+
+        if (!!hw_detect)
+                return CC_DETECT_PLUGIN;
+        else
+                return CC_DETECT_NOTPLUG;
 }
 
 int oplus_wired_rerun_bc12(void)
@@ -993,6 +1243,18 @@ int oplus_wired_shipmode_enable(bool enable)
 	chip->ship_mode = enable;
 
 	return 0;
+}
+
+bool oplus_wired_shipmode_is_enabled(void)
+{
+	struct oplus_mms_wired *chip = g_mms_wired;
+
+	if (chip == NULL) {
+		chg_err("chip is NULL");
+		return false;
+	}
+
+	return chip->ship_mode;
 }
 
 static bool is_voocphy_ic_available(struct oplus_mms_wired *chip)
@@ -1345,13 +1607,13 @@ int oplus_wired_get_shutdown_soc(struct oplus_mms *topic)
 		chg_err("topic is NULL");
 		return -ENODEV;
 	}
-
+#ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 	if ((get_eng_version() == HIGH_TEMP_AGING) ||
 	    (get_eng_version() == AGING)) {
 		chg_info("HIGH_TEMP_AGING or AGING no support backup soc\n");
 		return -ENOTSUPP;
 	}
-
+#endif
 	chip = oplus_mms_get_drvdata(topic);
 
 	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_GET_SHUTDOWN_SOC,
@@ -1373,13 +1635,13 @@ int oplus_wired_backup_soc(struct oplus_mms *topic, int soc)
 		chg_err("topic is NULL");
 		return -ENODEV;
 	}
-
+#ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 	if ((get_eng_version() == HIGH_TEMP_AGING) ||
 	    (get_eng_version() == AGING)) {
 		chg_info("HIGH_TEMP_AGING or AGING no support backup soc\n");
 		return -ENOTSUPP;
 	}
-
+#endif
 	chip = oplus_mms_get_drvdata(topic);
 
 	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_BACKUP_SOC, soc);
@@ -1414,13 +1676,14 @@ static bool oplus_usbtemp_check_is_support(struct oplus_mms_wired *chip)
 
 static bool oplus_wired_ccdetect_is_support(void)
 {
+#ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 	int boot_mode = get_boot_mode();
 
 	if (boot_mode == MSM_BOOT_MODE__RF ||
 	    boot_mode == MSM_BOOT_MODE__WLAN ||
 	    boot_mode == MSM_BOOT_MODE__FACTORY)
 		return false;
-
+#endif
 	return true;
 }
 
@@ -1592,6 +1855,10 @@ static void oplus_usbtemp_recover_func(struct oplus_mms_wired *chip)
 			(void)oplus_chg_ic_func(
 				chip->buck_ic,
 				OPLUS_IC_FUNC_SET_USB_DISCHG_ENABLE, false);
+			rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_SET_TYPEC_MODE,
+					       TYPEC_PORT_ROLE_ENABLE);
+			if (rc < 0)
+				chg_err("[OPLUS_USBTEMP] recover cc");
 			chg_err("[OPLUS_USBTEMP] usbtemp recover");
 			if (is_chg_suspend_votable_available(chip))
 				rc = vote(chip->chg_suspend_votable, USB_VOTER,
@@ -1693,10 +1960,15 @@ static int oplus_usbtemp_dischg_action(struct oplus_mms_wired *chip)
 	vooc_topic = oplus_mms_get_by_name("vooc");
 	if (!vooc_topic)
 		return 0;
-
+#ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 	if (get_eng_version() != HIGH_TEMP_AGING) {
+#endif
 		oplus_wired_set_usb_status(chip, USB_TEMP_HIGH);
-
+		rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_SET_TYPEC_MODE,
+				TYPEC_PORT_ROLE_DISABLE);
+		if (rc < 0)
+			chg_err("can't open cc, rc=%d\n", rc);
+		usleep_range(5000, 5000);
 		/*TODO*/
 		if(chip->vooc_charging) {
 			oplus_api_switch_normal_chg(vooc_topic);
@@ -1710,23 +1982,19 @@ static int oplus_usbtemp_dischg_action(struct oplus_mms_wired *chip)
 			rc = -ENOTSUPP;
 		if (rc < 0)
 			chg_err("can't set charge suspend, rc=%d\n", rc);
-		usleep_range(5000, 5000);
-		rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_SET_TYPEC_MODE,
-				  TYPEC_PORT_ROLE_DISABLE);
-		if (rc < 0)
-			chg_err("can't open cc, rc=%d\n", rc);
-		usleep_range(5000, 5000);
+		usleep_range(20000, 20000);
 		chg_err("set vbus down");
 		oplus_chg_ic_func(chip->buck_ic,
 				  OPLUS_IC_FUNC_SET_USB_DISCHG_ENABLE, true);
 		if(chip->vooc_charging)
 			oplus_api_vooc_turn_off_fastchg(vooc_topic);
+#ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 	} else {
 		chg_err("CONFIG_HIGH_TEMP_VERSION enable here,do not set vbus down \n");
 		oplus_chg_ic_func(chip->buck_ic,
 				  OPLUS_IC_FUNC_SET_USB_DISCHG_ENABLE, false);
 	}
-
+#endif
 	return 0;
 }
 
@@ -1747,14 +2015,13 @@ static void oplus_update_usbtemp_current_status(struct oplus_mms_wired *chip)
 	static int limit_cur_cnt_l = 0;
 	static int recover_cur_cnt_r = 0;
 	static int recover_cur_cnt_l = 0;
+	int batt_temp = chip->batt_realy_temp;
 
 	if ((chip->usb_temp_l < USB_30C || chip->usb_temp_l > USB_100C) &&
 	    (chip->usb_temp_r < USB_30C || chip->usb_temp_r > USB_100C)) {
 		chip->smart_charge_user = SMART_CHARGE_USER_OTHER;
-		if (is_cool_down_votable_available(chip)) {
-			vote(chip->cool_down_votable, USB_VOTER, false, 0,
-			     false);
-		}
+		if (is_cool_down_votable_available(chip))
+			vote(chip->cool_down_votable, USB_VOTER, false, 0, false);
 		limit_cur_cnt_r = 0;
 		recover_cur_cnt_r = 0;
 		limit_cur_cnt_l = 0;
@@ -1762,13 +2029,13 @@ static void oplus_update_usbtemp_current_status(struct oplus_mms_wired *chip)
 		return;
 	}
 
-	if ((chip->usb_temp_r - chip->batt_temp / 10) >= 12) {
+	if ((chip->usb_temp_r - batt_temp / 10) >= 12) {
 		limit_cur_cnt_r++;
 		if (limit_cur_cnt_r >= RETRY_COUNT) {
 			limit_cur_cnt_r = RETRY_COUNT;
 		}
 		recover_cur_cnt_r = 0;
-	} else if ((chip->usb_temp_r - chip->batt_temp / 10) <= 6) {
+	} else if ((chip->usb_temp_r - batt_temp / 10) <= 6) {
 		recover_cur_cnt_r++;
 		if (recover_cur_cnt_r >= RETRY_COUNT) {
 			recover_cur_cnt_r = RETRY_COUNT;
@@ -1776,13 +2043,13 @@ static void oplus_update_usbtemp_current_status(struct oplus_mms_wired *chip)
 		limit_cur_cnt_r = 0;
 	}
 
-	if ((chip->usb_temp_l - chip->batt_temp / 10) >= 12) {
+	if ((chip->usb_temp_l - batt_temp / 10) >= 12) {
 		limit_cur_cnt_l++;
 		if (limit_cur_cnt_l >= RETRY_COUNT) {
 			limit_cur_cnt_l = RETRY_COUNT;
 		}
 		recover_cur_cnt_l = 0;
-	} else if ((chip->usb_temp_l - chip->batt_temp / 10) <= 6) {
+	} else if ((chip->usb_temp_l - batt_temp / 10) <= 6) {
 		recover_cur_cnt_l++;
 		if (recover_cur_cnt_l >= RETRY_COUNT) {
 			recover_cur_cnt_l = RETRY_COUNT;
@@ -1794,11 +2061,8 @@ static void oplus_update_usbtemp_current_status(struct oplus_mms_wired *chip)
 	     RETRY_COUNT <= limit_cur_cnt_l) &&
 	    (chip->smart_charge_user == SMART_CHARGE_USER_OTHER)) {
 		chip->smart_charge_user = SMART_CHARGE_USER_USBTEMP;
-		if (is_cool_down_votable_available(chip)) {
-			/* TODO: LCD on or off? */
-			vote(chip->cool_down_votable, USB_VOTER, true, 3,
-			     false);
-		}
+		if (is_cool_down_votable_available(chip))
+			vote(chip->cool_down_votable, USB_VOTER, true, 3, false);
 		limit_cur_cnt_r = 0;
 		recover_cur_cnt_r = 0;
 		limit_cur_cnt_l = 0;
@@ -1807,10 +2071,8 @@ static void oplus_update_usbtemp_current_status(struct oplus_mms_wired *chip)
 		    RETRY_COUNT <= recover_cur_cnt_l) &&
 		   (chip->smart_charge_user == SMART_CHARGE_USER_USBTEMP)) {
 		chip->smart_charge_user = SMART_CHARGE_USER_OTHER;
-		if (is_cool_down_votable_available(chip)) {
-			vote(chip->cool_down_votable, USB_VOTER, false, 0,
-			     false);
-		}
+		if (is_cool_down_votable_available(chip))
+			vote(chip->cool_down_votable, USB_VOTER, false, 0, false);
 		limit_cur_cnt_r = 0;
 		recover_cur_cnt_r = 0;
 		limit_cur_cnt_l = 0;
@@ -1829,6 +2091,7 @@ static int oplus_usbtemp_push_err_msg(struct oplus_mms_wired *chip,
 				      int last_usb_temp_r, int batt_curr)
 {
 	struct mms_msg *msg;
+	int batt_temp = chip->batt_realy_temp;
 	int rc;
 
 	if (!is_err_topic_available(chip)) {
@@ -1841,7 +2104,7 @@ static int oplus_usbtemp_push_err_msg(struct oplus_mms_wired *chip,
 			MSG_TYPE_ITEM, MSG_PRIO_MEDIUM, ERR_ITEM_USBTEMP,
 			"$$reason@@%s$$batt_temp@@%d"
 			"$$usb_temp_l@@%d$$usb_temp_r@@%d",
-			"first_condition", chip->batt_temp, chip->usb_temp_l,
+			"first_condition", batt_temp, chip->usb_temp_l,
 			chip->usb_temp_r);
 	} else if (condition == USBTEMP_TRIGGER_CONDITION_2) {
 		msg = oplus_mms_alloc_str_msg(
@@ -1849,7 +2112,7 @@ static int oplus_usbtemp_push_err_msg(struct oplus_mms_wired *chip,
 			"$$reason@@%s$$batt_temp@@%d"
 			"$$usb_temp_l@@%d$$last_usb_temp_l@@%d"
 			"$$usb_temp_r@@%d$$last_usb_temp_r@@%d",
-			"second_condition", chip->batt_temp, chip->usb_temp_l,
+			"second_condition", batt_temp, chip->usb_temp_l,
 			last_usb_temp_l, chip->usb_temp_r, last_usb_temp_r);
 	} else if (condition == USBTEMP_TRIGGER_CONDITION_COOL_DOWN) {
 		msg = oplus_mms_alloc_str_msg(
@@ -1857,7 +2120,7 @@ static int oplus_usbtemp_push_err_msg(struct oplus_mms_wired *chip,
 			"$$reason@@%s$$batt_temp@@%d"
 			"$$usb_temp_l@@%d$$usb_temp_r@@%d"
 			"$$batt_current@@%d",
-			"cool_down_condition", chip->batt_temp,
+			"cool_down_condition", batt_temp,
 			chip->usb_temp_l, chip->usb_temp_r, batt_curr);
 	} else if (condition == USBTEMP_TRIGGER_CONDITION_COOL_DOWN_RECOVERY) {
 		msg = oplus_mms_alloc_str_msg(
@@ -1865,7 +2128,7 @@ static int oplus_usbtemp_push_err_msg(struct oplus_mms_wired *chip,
 			"$$reason@@%s$$batt_temp@@%d"
 			"$$usb_temp_l@@%d$$usb_temp_r@@%d"
 			"$$batt_current@@%d",
-			"cool_down_recovery_condition", chip->batt_temp,
+			"cool_down_recovery_condition", batt_temp,
 			chip->usb_temp_l, chip->usb_temp_r, batt_curr);
 	} else {
 		chg_err("unknown condition\n");
@@ -1903,6 +2166,7 @@ static int oplus_usbtemp_monitor_main(void *data)
 	struct oplus_mms_wired *chip = data;
 	static int log_count = 0;
 	struct oplus_usbtemp_spec_config *spec = &chip->usbtemp_spec;
+	int batt_temp = 0;
 
 	chg_info("[oplus_usbtemp_monitor_main]:run first!");
 	spec = &chip->usbtemp_spec;
@@ -1913,6 +2177,7 @@ static int oplus_usbtemp_monitor_main(void *data)
 		}
 		oplus_wired_get_usb_temp_volt(&chip->usbtemp_volt_l, &chip->usbtemp_volt_r);
 		oplus_wired_get_usb_temp(&chip->usb_temp_l, &chip->usb_temp_r);
+		batt_temp = chip->batt_realy_temp;
 		if ((chip->usb_temp_l < USB_50C) && (chip->usb_temp_r < USB_50C)) { /*get vbus when usbtemp < 50C*/
 			vbus_volt = oplus_wired_get_vbus();
 		} else {
@@ -1933,7 +2198,7 @@ static int oplus_usbtemp_monitor_main(void *data)
 			delay = VBUS_MONITOR_INTERVAL;
 
 		/*condition1  :the temp is higher than 57*/
-		if (chip->batt_temp / 10 <= USB_50C &&
+		if (batt_temp / 10 <= USB_50C &&
 		    (((chip->usb_temp_l >= USB_57C) && (chip->usb_temp_l < USB_100C)) ||
 		     ((chip->usb_temp_r >= USB_57C) && (chip->usb_temp_r < USB_100C)))) {
 			chg_err("in loop 1");
@@ -1960,17 +2225,17 @@ static int oplus_usbtemp_monitor_main(void *data)
 			last_usb_temp_r = chip->usb_temp_r;
 			last_usb_temp_l = chip->usb_temp_l;
 		}
-		if (chip->batt_temp / 10 > USB_50C &&
-		    (((chip->usb_temp_l >= chip->batt_temp / 10 + 7) && (chip->usb_temp_l < USB_100C)) ||
-		     ((chip->usb_temp_r >= chip->batt_temp / 10 + 7) && (chip->usb_temp_r < USB_100C)))) {
+		if (batt_temp / 10 > USB_50C &&
+		    (((chip->usb_temp_l >= batt_temp / 10 + 7) && (chip->usb_temp_l < USB_100C)) ||
+		     ((chip->usb_temp_r >= batt_temp / 10 + 7) && (chip->usb_temp_r < USB_100C)))) {
 			chg_err("in loop 1");
 			for (i = 1; i <= retry_cnt; i++) {
 				mdelay(RETRY_CNT_DELAY);
 				oplus_wired_get_usb_temp_volt(&chip->usbtemp_volt_l, &chip->usbtemp_volt_r);
 				oplus_wired_get_usb_temp(&chip->usb_temp_l, &chip->usb_temp_r);
-				if ((chip->usb_temp_r >= chip->batt_temp / 10 + 7) && chip->usb_temp_r < USB_100C)
+				if ((chip->usb_temp_r >= batt_temp / 10 + 7) && chip->usb_temp_r < USB_100C)
 					count_r++;
-				if ((chip->usb_temp_l >= chip->batt_temp / 10 + 7) && chip->usb_temp_l < USB_100C)
+				if ((chip->usb_temp_l >= batt_temp / 10 + 7) && chip->usb_temp_l < USB_100C)
 					count_l++;
 				chg_err("countl : %d", count_l);
 			}
@@ -1993,9 +2258,9 @@ static int oplus_usbtemp_monitor_main(void *data)
 		}
 
 		/*condition2  :the temp uprising to fast*/
-		if ((((chip->usb_temp_l - chip->batt_temp / 10) > spec->usbtemp_batttemp_gap) &&
+		if ((((chip->usb_temp_l - batt_temp / 10) > spec->usbtemp_batttemp_gap) &&
 		     (chip->usb_temp_l < USB_100C)) ||
-		    (((chip->usb_temp_r - chip->batt_temp / 10) > spec->usbtemp_batttemp_gap) &&
+		    (((chip->usb_temp_r - batt_temp / 10) > spec->usbtemp_batttemp_gap) &&
 		     (chip->usb_temp_r < USB_100C))) {
 			if (count == 0) {
 				last_usb_temp_r = chip->usb_temp_r;
@@ -2085,22 +2350,24 @@ static int oplus_usbtemp_monitor_main(void *data)
 static bool oplus_usbtemp_l_trigger_current_status(struct oplus_mms_wired *chip)
 {
 	struct oplus_usbtemp_spec_config *spec;
+	int batt_temp;
 
 	if (!chip)
 		return false;
 	spec = &chip->usbtemp_spec;
+	batt_temp = chip->batt_realy_temp;
 
 	if (chip->usb_temp_l < USB_30C || chip->usb_temp_l > USB_100C)
 		return false;
 
 	if (chip->usbtemp_curr_status == OPLUS_USBTEMP_LOW_CURR) {
 		if ((chip->usb_temp_l >= spec->usbtemp_cool_down_ntc_low) ||
-		    (chip->usb_temp_l - chip->batt_temp / 10) >= spec->usbtemp_cool_down_gap_low)
+		    (chip->usb_temp_l - batt_temp / 10) >= spec->usbtemp_cool_down_gap_low)
 			return true;
 		return false;
 	} else if (chip->usbtemp_curr_status == OPLUS_USBTEMP_HIGH_CURR) {
 		if ((chip->usb_temp_l >= spec->usbtemp_cool_down_ntc_high) ||
-		    (chip->usb_temp_l - chip->batt_temp / 10) >= spec->usbtemp_cool_down_gap_high)
+		    (chip->usb_temp_l - batt_temp / 10) >= spec->usbtemp_cool_down_gap_high)
 			return true;
 		return false;
 	} else {
@@ -2111,19 +2378,21 @@ static bool oplus_usbtemp_l_trigger_current_status(struct oplus_mms_wired *chip)
 static bool oplus_usbtemp_l_recovery_current_status(struct oplus_mms_wired *chip)
 {
 	struct oplus_usbtemp_spec_config *spec;
+	int batt_temp;
 
 	if (!chip)
 		return false;
 	spec = &chip->usbtemp_spec;
+	batt_temp = chip->batt_realy_temp;
 
 	if (chip->usbtemp_curr_status == OPLUS_USBTEMP_LOW_CURR) {
 		if ((chip->usb_temp_l <= spec->usbtemp_cool_down_recover_ntc_low) &&
-		    (chip->usb_temp_l - chip->batt_temp / 10) <= spec->usbtemp_cool_down_recover_gap_low)
+		    (chip->usb_temp_l - batt_temp / 10) <= spec->usbtemp_cool_down_recover_gap_low)
 			return true;
 		return false;
 	} else if (chip->usbtemp_curr_status == OPLUS_USBTEMP_HIGH_CURR) {
 		if ((chip->usb_temp_l <= spec->usbtemp_cool_down_recover_ntc_high) &&
-		    (chip->usb_temp_l - chip->batt_temp / 10) <= spec->usbtemp_cool_down_recover_gap_high)
+		    (chip->usb_temp_l - batt_temp / 10) <= spec->usbtemp_cool_down_recover_gap_high)
 			return true;
 		return false;
 	} else {
@@ -2134,22 +2403,24 @@ static bool oplus_usbtemp_l_recovery_current_status(struct oplus_mms_wired *chip
 static bool oplus_usbtemp_r_trigger_current_status(struct oplus_mms_wired *chip)
 {
 	struct oplus_usbtemp_spec_config *spec;
+	int batt_temp;
 
 	if (!chip)
 		return false;
 	spec = &chip->usbtemp_spec;
+	batt_temp = chip->batt_realy_temp;
 
 	if (chip->usb_temp_r < USB_30C || chip->usb_temp_r > USB_100C)
 		return false;
 
 	if (chip->usbtemp_curr_status == OPLUS_USBTEMP_LOW_CURR) {
 		if ((chip->usb_temp_r >= spec->usbtemp_cool_down_ntc_low) ||
-		    (chip->usb_temp_r - chip->batt_temp / 10) >= spec->usbtemp_cool_down_gap_low)
+		    (chip->usb_temp_r - batt_temp / 10) >= spec->usbtemp_cool_down_gap_low)
 			return true;
 		return false;
 	} else if (chip->usbtemp_curr_status == OPLUS_USBTEMP_HIGH_CURR) {
 		if ((chip->usb_temp_r >= spec->usbtemp_cool_down_ntc_high) ||
-		    (chip->usb_temp_r - chip->batt_temp / 10) >= spec->usbtemp_cool_down_gap_high)
+		    (chip->usb_temp_r - batt_temp / 10) >= spec->usbtemp_cool_down_gap_high)
 			return true;
 		return false;
 	} else {
@@ -2160,19 +2431,21 @@ static bool oplus_usbtemp_r_trigger_current_status(struct oplus_mms_wired *chip)
 static bool oplus_usbtemp_r_recovery_current_status(struct oplus_mms_wired *chip)
 {
 	struct oplus_usbtemp_spec_config *spec;
+	int batt_temp;
 
 	if (!chip)
 		return false;
 	spec = &chip->usbtemp_spec;
+	batt_temp = chip->batt_realy_temp;
 
 	if (chip->usbtemp_curr_status == OPLUS_USBTEMP_LOW_CURR) {
 		if ((chip->usb_temp_r <= spec->usbtemp_cool_down_recover_ntc_low) &&
-		    (chip->usb_temp_r - chip->batt_temp / 10) <= spec->usbtemp_cool_down_recover_gap_low)
+		    (chip->usb_temp_r - batt_temp / 10) <= spec->usbtemp_cool_down_recover_gap_low)
 			return true;
 		return false;
 	} else if (chip->usbtemp_curr_status == OPLUS_USBTEMP_HIGH_CURR) {
 		if ((chip->usb_temp_r <= spec->usbtemp_cool_down_recover_ntc_high) &&
-		    (chip->usb_temp_r - chip->batt_temp / 10) <= spec->usbtemp_cool_down_recover_gap_high)
+		    (chip->usb_temp_r - batt_temp / 10) <= spec->usbtemp_cool_down_recover_gap_high)
 			return true;
 		return false;
 	} else {
@@ -2252,7 +2525,10 @@ static void oplus_update_usbtemp_current_status_new_method(struct oplus_mms_wire
 	if ((RETRY_COUNT <= limit_cur_cnt_r || RETRY_COUNT <= limit_cur_cnt_l) &&
 	    (chip->smart_charge_user == SMART_CHARGE_USER_OTHER)) {
 		chip->smart_charge_user = SMART_CHARGE_USER_USBTEMP;
-		cool_down = oplus_vooc_current_to_level(chip->vooc_topic, USBTEMP_CHARGING_CURRENT_LIMIT);
+		if (chip->ufcs_online)
+			cool_down = oplus_ufcs_current_to_level(chip->ufcs_topic, USBTEMP_CHARGING_CURRENT_LIMIT);
+		else
+			cool_down = oplus_vooc_current_to_level(chip->vooc_topic, USBTEMP_CHARGING_CURRENT_LIMIT);
 		if (is_cool_down_votable_available(chip) && cool_down > 0)
 			vote(chip->cool_down_votable, USB_VOTER, true, cool_down, false);
 		limit_cur_cnt_r = 0;
@@ -2280,19 +2556,21 @@ static void oplus_update_usbtemp_current_status_new_method(struct oplus_mms_wire
 static bool oplus_usbtemp_condition_temp_high(struct oplus_mms_wired *chip)
 {
 	struct oplus_usbtemp_spec_config *spec;
+	int batt_temp;
 
 	if (!chip)
 		return false;
 	spec = &chip->usbtemp_spec;
+	batt_temp = chip->batt_realy_temp;
 
 	if (chip->usbtemp_curr_status == OPLUS_USBTEMP_LOW_CURR) {
-		if (chip->batt_temp / 10 <= spec->usbtemp_batt_temp_low &&
+		if (batt_temp / 10 <= spec->usbtemp_batt_temp_low &&
 		    (((chip->usb_temp_l >= spec->usbtemp_ntc_temp_low) && (chip->usb_temp_l < USB_100C)) ||
 		     ((chip->usb_temp_r >= spec->usbtemp_ntc_temp_low) && (chip->usb_temp_r < USB_100C))))
 			return true;
 		return false;
 	} else if (chip->usbtemp_curr_status == OPLUS_USBTEMP_HIGH_CURR) {
-		if (chip->batt_temp / 10 <= spec->usbtemp_batt_temp_high &&
+		if (batt_temp / 10 <= spec->usbtemp_batt_temp_high &&
 		    (((chip->usb_temp_l >= spec->usbtemp_ntc_temp_high) && (chip->usb_temp_l < USB_100C)) ||
 		     ((chip->usb_temp_r >= spec->usbtemp_ntc_temp_high) && (chip->usb_temp_r < USB_100C))))
 			return true;
@@ -2305,25 +2583,43 @@ static bool oplus_usbtemp_condition_temp_high(struct oplus_mms_wired *chip)
 static bool oplus_usbtemp_temp_rise_fast_with_batt_temp(struct oplus_mms_wired *chip)
 {
 	struct oplus_usbtemp_spec_config *spec;
+	int batt_temp;
 
 	if (!chip)
 		return false;
 	spec = &chip->usbtemp_spec;
+	batt_temp = chip->batt_realy_temp;
 
 	if (chip->usbtemp_curr_status == OPLUS_USBTEMP_LOW_CURR) {
-		if (chip->batt_temp / 10 > spec->usbtemp_batt_temp_low &&
-		    (((chip->usb_temp_l >= chip->batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
-		      (chip->usb_temp_l < USB_100C)) ||
-		     ((chip->usb_temp_r >= chip->batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
-		      (chip->usb_temp_r < USB_100C))))
-			return true;
-		return false;
+		if (oplus_is_power_off_charging() && (spec->support_hot_enter_kpoc || chip->high_temp_scheme)) {
+			if (((batt_temp / 10 > spec->usbtemp_batt_temp_low) && (batt_temp / 10 <= spec->usbtemp_batt_temp_over_hot)) &&
+				(((chip->usb_temp_l >= batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
+				  (chip->usb_temp_l < USB_100C)) ||
+				 ((chip->usb_temp_r >= batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
+				  (chip->usb_temp_r < USB_100C))))
+				return true;
+			else if(batt_temp / 10 > spec->usbtemp_batt_temp_over_hot &&
+				(((chip->usb_temp_l >= batt_temp / 10 + spec->usbtemp_temp_gap_with_batt_temp_in_over_hot) &&
+				  (chip->usb_temp_l < USB_100C)) ||
+				 ((chip->usb_temp_r >= batt_temp / 10 + spec->usbtemp_temp_gap_with_batt_temp_in_over_hot) &&
+				  (chip->usb_temp_r < USB_100C))))
+				return true;
+			return false;
+		} else {
+			if (batt_temp / 10 > spec->usbtemp_batt_temp_low &&
+				(((chip->usb_temp_l >= batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
+				  (chip->usb_temp_l < USB_100C)) ||
+				 ((chip->usb_temp_r >= batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
+				  (chip->usb_temp_r < USB_100C))))
+				return true;
+			return false;
+		}
 	} else if (chip->usbtemp_curr_status == OPLUS_USBTEMP_HIGH_CURR) {
-		if (chip->batt_temp / 10 > spec->usbtemp_batt_temp_high &&
-		    (((chip->usb_temp_l >= chip->batt_temp / 10 + spec->usbtemp_temp_gap_high_with_batt_temp) &&
-		      (chip->usb_temp_l < USB_100C)) ||
-		     ((chip->usb_temp_r >= chip->batt_temp / 10 + spec->usbtemp_temp_gap_high_with_batt_temp) &&
-		      (chip->usb_temp_r < USB_100C))))
+		if (batt_temp / 10 > spec->usbtemp_batt_temp_high &&
+			(((chip->usb_temp_l >= batt_temp / 10 + spec->usbtemp_temp_gap_high_with_batt_temp) &&
+			  (chip->usb_temp_l < USB_100C)) ||
+			 ((chip->usb_temp_r >= batt_temp / 10 + spec->usbtemp_temp_gap_high_with_batt_temp) &&
+			  (chip->usb_temp_r < USB_100C))))
 			return true;
 		return false;
 	} else {
@@ -2334,22 +2630,24 @@ static bool oplus_usbtemp_temp_rise_fast_with_batt_temp(struct oplus_mms_wired *
 static bool oplus_usbtemp_temp_rise_fast_without_batt_temp(struct oplus_mms_wired *chip)
 {
 	struct oplus_usbtemp_spec_config *spec;
+	int batt_temp;
 
 	if (!chip)
 		return false;
+	batt_temp = chip->batt_realy_temp;
 	spec = &chip->usbtemp_spec;
 
 	if (chip->usbtemp_curr_status == OPLUS_USBTEMP_LOW_CURR) {
-		if ((((chip->usb_temp_l - chip->batt_temp / 10) >= spec->usbtemp_temp_gap_low_without_batt_temp) &&
+		if ((((chip->usb_temp_l - batt_temp / 10) >= spec->usbtemp_temp_gap_low_without_batt_temp) &&
 		     (chip->usb_temp_l < USB_100C)) ||
-		    (((chip->usb_temp_r - chip->batt_temp / 10) >= spec->usbtemp_temp_gap_low_without_batt_temp) &&
+		    (((chip->usb_temp_r - batt_temp / 10) >= spec->usbtemp_temp_gap_low_without_batt_temp) &&
 		     (chip->usb_temp_r < USB_100C)))
 			return true;
 		return false;
 	} else if (chip->usbtemp_curr_status == OPLUS_USBTEMP_HIGH_CURR) {
-		if ((((chip->usb_temp_l - chip->batt_temp / 10) >= spec->usbtemp_temp_gap_high_without_batt_temp) &&
+		if ((((chip->usb_temp_l - batt_temp / 10) >= spec->usbtemp_temp_gap_high_without_batt_temp) &&
 		     (chip->usb_temp_l < USB_100C)) ||
-		    (((chip->usb_temp_r - chip->batt_temp / 10) >= spec->usbtemp_temp_gap_high_without_batt_temp) &&
+		    (((chip->usb_temp_r - batt_temp / 10) >= spec->usbtemp_temp_gap_high_without_batt_temp) &&
 		     (chip->usb_temp_r < USB_100C)))
 			return true;
 		return false;
@@ -2390,9 +2688,11 @@ static bool oplus_usbtemp_change_curr_range(
 	static int current_curr_change_temp_r = 25;
 	int count_curr_r = 1, count_curr_l = 1;
 	int i = 0;
+	int batt_temp;
 
 	if (!chip)
 		return false;
+	batt_temp = chip->batt_realy_temp;
 
 	chip->usbtemp_curr_status = OPLUS_USBTEMP_HIGH_CURR;
 	if (usbtemp_first_time_in_curr_range == false) {
@@ -2421,20 +2721,14 @@ static bool oplus_usbtemp_change_curr_range(
 
 		if ((count_curr_l >= retry_cnt && chip->usb_temp_l > USB_30C && chip->usb_temp_l < USB_100C) ||
 		    (count_curr_r >= retry_cnt && chip->usb_temp_r > USB_30C && chip->usb_temp_r < USB_100C)) {
-			chg_info("change curr range...,current_temp_l=%d,last_usb_temp_l=%d,current_temp_r=%d,last_usb_temp_r =%d, chip->batt_temp = %d\n",
+			chg_info("change curr range...,current_temp_l=%d,last_usb_temp_l=%d,current_temp_r=%d,last_usb_temp_r =%d, batt_temp = %d\n",
 				current_curr_change_temp_l, last_curr_change_usb_temp_l, current_curr_change_temp_r,
-				last_curr_change_usb_temp_r, chip->batt_temp);
+				last_curr_change_usb_temp_r, batt_temp);
 			count_curr_r = 1;
 			count_curr_l = 1;
 			return true;
 		}
 	}
-
-	if (curr_range_change == false || chip->usbtemp_curr_status != OPLUS_USBTEMP_LOW_CURR) {
-		last_curr_change_usb_temp_r = chip->usb_temp_r;
-		last_curr_change_usb_temp_l = chip->usb_temp_l;
-	}
-
 	return false;
 }
 
@@ -2478,11 +2772,13 @@ static bool oplus_usbtemp_trigger_for_rise_fast_temp(
 	struct oplus_mms_wired *chip, int retry_cnt, int count_r, int count_l)
 {
 	struct oplus_usbtemp_spec_config *spec;
+	int batt_temp;
 	int i = 0;
 
 	if (!chip)
 		return false;
 	spec = &chip->usbtemp_spec;
+	batt_temp = chip->batt_realy_temp;
 
 	if (oplus_usbtemp_temp_rise_fast_with_batt_temp(chip)) {
 		chg_info("in usbtemp rise fast with usbtemp!\n");
@@ -2492,20 +2788,20 @@ static bool oplus_usbtemp_trigger_for_rise_fast_temp(
 			oplus_wired_get_usb_temp(&chip->usb_temp_l, &chip->usb_temp_r);
 			if (chip->usbtemp_curr_status == OPLUS_USBTEMP_LOW_CURR) {
 				if ((chip->usb_temp_r >=
-				     chip->batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
+				     batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
 				    chip->usb_temp_r < USB_100C)
 					count_r++;
 				if ((chip->usb_temp_l >=
-				     chip->batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
+				     batt_temp / 10 + spec->usbtemp_temp_gap_low_with_batt_temp) &&
 				    chip->usb_temp_l < USB_100C)
 					count_l++;
 			} else if (chip->usbtemp_curr_status == OPLUS_USBTEMP_HIGH_CURR) {
 				if ((chip->usb_temp_r >=
-				     chip->batt_temp / 10 + spec->usbtemp_temp_gap_high_with_batt_temp) &&
+				     batt_temp / 10 + spec->usbtemp_temp_gap_high_with_batt_temp) &&
 				    chip->usb_temp_r < USB_100C)
 					count_r++;
 				if ((chip->usb_temp_l >=
-				     chip->batt_temp / 10 + spec->usbtemp_temp_gap_high_with_batt_temp) &&
+				     batt_temp / 10 + spec->usbtemp_temp_gap_high_with_batt_temp) &&
 				    chip->usb_temp_l < USB_100C)
 					count_l++;
 			}
@@ -2561,6 +2857,7 @@ static bool oplus_usbtemp_trigger_for_rise_fast_without_temp(
 			current_temp_r = chip->usb_temp_r;
 			if ((count_l >= retry_cnt && chip->usb_temp_l > USB_30C && chip->usb_temp_l < USB_100C) ||
 			    (count_r >= retry_cnt && chip->usb_temp_r > USB_30C && chip->usb_temp_r < USB_100C)) {
+				count = 0;
 				return true;
 			}
 			count_r = 1;
@@ -2592,6 +2889,9 @@ int oplus_usbtemp_monitor_common_new_method(void *data)
 	int count_r = 1, count_l = 1;
 	bool condition1 = false;
 	bool condition2 = false;
+	bool gauge_not_ready = false;
+	union mms_msg_data real_temp_data = { 0 };
+	int rc = 0;
 	int condition;
 	static bool curr_range_change = false;
 	int batt_current = 0;
@@ -2619,6 +2919,26 @@ int oplus_usbtemp_monitor_common_new_method(void *data)
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(chip->oplus_usbtemp_wq, chip->usbtemp_check);
+		if (oplus_is_power_off_charging()) {
+			if (chip->gauge_topic == NULL) {
+				gauge_not_ready = true;
+				delay = 100;
+				goto dischg;
+			}
+			if (gauge_not_ready) {
+				rc = oplus_mms_get_item_data(chip->gauge_topic, GAUGE_ITEM_REAL_TEMP, &real_temp_data, false);
+				if (rc < 0) {
+					chg_err("can't get GAUGE_ITEM_HMAC data in  usbtemp_monitor new, rc=%d\n", rc);
+					delay = 100;
+					goto dischg;
+				} else {
+		 			chip->batt_realy_temp = real_temp_data.intval;
+					chg_info("usbtemp_volt_l[%d], usb_temp_l[%d], usbtemp_volt_r[%d], usb_temp_r[%d] temp[%d]%d\n",
+						chip->usbtemp_volt_l, chip->usb_temp_l, chip->usbtemp_volt_r, chip->usb_temp_r, chip->batt_realy_temp, spec->support_hot_enter_kpoc);
+				}
+			}
+			gauge_not_ready = false;
+		}
 		if (chip->dischg_flag)
 			goto dischg;
 		oplus_wired_get_usb_temp_volt(&chip->usbtemp_volt_l, &chip->usbtemp_volt_r);
@@ -2760,9 +3080,9 @@ int oplus_usbtemp_monitor_common_new_method(void *data)
 		msleep(delay);
 		chip->usbtemp_pre_batt_current = batt_current;
 		if (usbtemp_debug & OPEN_LOG_BIT) {
-			chg_info("usbtemp: delay %d", delay);
-			chg_info("usbtemp_volt_l[%d], usb_temp_l[%d], usbtemp_volt_r[%d], usb_temp_r[%d]\n",
-				 chip->usbtemp_volt_l, chip->usb_temp_l, chip->usbtemp_volt_r, chip->usb_temp_r);
+			chg_info("usbtemp: delay %d %d %d", delay, spec->usbtemp_batt_temp_over_hot, spec->usbtemp_temp_gap_with_batt_temp_in_over_hot);
+			chg_info("usbtemp_volt_l[%d], usb_temp_l[%d], usbtemp_volt_r[%d], usb_temp_r[%d] temp[%d]%d\n",
+				 chip->usbtemp_volt_l, chip->usb_temp_l, chip->usbtemp_volt_r, chip->usb_temp_r, chip->batt_realy_temp, spec->support_hot_enter_kpoc);
 		}
 	}
 	return 0;
@@ -2788,7 +3108,7 @@ void oplus_wake_up_usbtemp_thread(struct oplus_mms_wired *chip)
 }
 
 static void oplus_wired_gauge_subs_callback(struct mms_subscribe *subs,
-					   enum mms_msg_type type, u32 id)
+					    enum mms_msg_type type, u32 id, bool sync)
 {
 	struct oplus_mms_wired *chip = subs->priv_data;
 
@@ -2823,6 +3143,9 @@ static void oplus_wired_subscribe_gauge_topic(struct oplus_mms *topic,
 	oplus_mms_get_item_data(chip->gauge_topic, GAUGE_ITEM_TEMP, &data,
 				false);
 	chip->batt_temp = data.intval;
+	oplus_mms_get_item_data(chip->gauge_topic, GAUGE_ITEM_REAL_TEMP, &data,
+				false);
+	chip->batt_realy_temp = data.intval;
 	oplus_mms_get_item_data(chip->gauge_topic, GAUGE_ITEM_CURR, &data,
 				false);
 	chip->batt_curr = data.intval;
@@ -2840,6 +3163,9 @@ static void oplus_wired_gauge_update_work(struct work_struct *work)
 	oplus_mms_get_item_data(chip->gauge_topic, GAUGE_ITEM_TEMP, &data,
 				false);
 	chip->batt_temp = data.intval;
+	oplus_mms_get_item_data(chip->gauge_topic, GAUGE_ITEM_REAL_TEMP, &data,
+				false);
+	chip->batt_realy_temp = data.intval;
 
 	oplus_mms_get_item_data(chip->comm_topic, COMM_ITEM_SHELL_TEMP, &data,
 				false);
@@ -2850,34 +3176,106 @@ static void oplus_wired_gauge_update_work(struct work_struct *work)
 	oplus_mms_get_item_data(chip->gauge_topic, GAUGE_ITEM_CURR, &data,
 				false);
 	chip->batt_curr = data.intval;
+	if (oplus_wired_is_present() && !chip->vooc_started)
+		oplus_wired_set_aicl_point();
 }
 
+static bool oplus_wls_init_complete(struct oplus_mms_wired *chip)
+{
+       union mms_msg_data data = { 0 };
+
+       if (chip->wls_topic)
+               oplus_mms_get_item_data(chip->wls_topic, WLS_ITEM_INIT_COMPLETED, &data, true);
+       return !!data.intval;
+}
+
+static bool oplus_wls_is_present(struct oplus_mms_wired *chip)
+{
+       union mms_msg_data data = { 0 };
+
+       if (chip->wls_topic)
+               oplus_mms_get_item_data(chip->wls_topic, WLS_ITEM_PRESENT, &data, true);
+       return !!data.intval;
+}
+
+#define OTG_BOOST_VOL_THRESHOLD 5000
 static void oplus_wired_otg_enable_handler_work(struct work_struct *work)
 {
+	struct delayed_work *dwork = to_delayed_work(work);
 	struct oplus_mms_wired *chip =
-		container_of(work, struct oplus_mms_wired, otg_enable_handler_work);
+		container_of(dwork, struct oplus_mms_wired, otg_enable_handler_work);
 	struct mms_msg *msg;
 	bool enable;
 	enum typec_data_role role;
 	int rc;
+	struct oplus_usbtemp_spec_config *spec;
+
+	if (!chip)
+		return;
+	spec = &chip->usbtemp_spec;
 
 	rc = oplus_chg_ic_func(chip->buck_ic,
 			       OPLUS_IC_FUNC_GET_OTG_ENABLE, &enable);
 	if (rc < 0)
 		enable = false;
+	chg_info("enable=%d, otg_disbale_status = %d\n", enable, chip->otg_disbale_status);
+	enable &= !chip->otg_disbale_status;
+	chip->otg_online_status = enable;
+	chg_info("otg_online status = %d\n", chip->otg_online_status);
+	if (chip->wls_upgrading) {
+		chg_info("wls is upgrading\n");
+		return;
+	}
+	if (chip->support_wlsotg_non_coexistence) {
+		if (enable && oplus_wls_is_present(chip)) {
+			chip->otg_enable_pending = true;
+			oplus_wired_set_usb_status(chip, OTG_ENABLE_PENDING);
+			chg_info("otg enable pending...\n");
+			if (is_batt_psy_available(chip))
+				power_supply_changed(chip->batt_psy);
+			return;
+		}
+		if (!enable && chip->otg_enable_pending) {
+			chip->otg_enable_pending = false;
+			oplus_wired_clear_usb_status(chip, OTG_ENABLE_PENDING);
+			chg_info("cancel otg enable pending\n");
+			if (is_batt_psy_available(chip))
+				power_supply_changed(chip->batt_psy);
+			return;
+		}
+	}
 
 	rc = oplus_chg_ic_func(chip->buck_ic,
 			       OPLUS_IC_FUNC_GET_DATA_ROLE, (int *)&role);
 	if (rc < 0)
 		role = enable ? TYPEC_HOST : TYPEC_DEVICE;
 
-	/* TODO:set wls wrx_en */
+	if (enable) {
+		msg = oplus_mms_alloc_msg(MSG_TYPE_ITEM, MSG_PRIO_MEDIUM, WIRED_ITEM_PRE_OTG_ENABLE);
+		if (msg == NULL) {
+			chg_err("alloc msg error\n");
+			return;
+		}
+		rc = oplus_mms_publish_msg_sync(chip->wired_topic, msg);
+		if (rc < 0) {
+			chg_err("publish otg pre enable msg error, rc=%d\n", rc);
+			kfree(msg);
+		}
+	}
 
 	if (enable) {
 		rc = oplus_chg_ic_func(chip->buck_ic,
 				       OPLUS_IC_FUNC_DISABLE_VBUS, true, false);
 		if (rc < 0 && rc != -ENOTSUPP)
 			chg_err("can't disable vbus\n");
+
+		rc = oplus_wired_set_otg_boost_curr_limit(spec->usbtemp_otg_cc_boot_current_limit);
+		if (rc < 0 && rc != -ENOTSUPP)
+			chg_err("can't set otg boost curr limit\n");
+
+		rc = oplus_wired_set_otg_boost_vol(OTG_BOOST_VOL_THRESHOLD);
+		if (rc < 0 && rc != -ENOTSUPP)
+			chg_err("can't set otg boost vol\n");
 	}
 	rc = oplus_chg_ic_func(chip->buck_ic,
 			       OPLUS_IC_FUNC_OTG_BOOST_ENABLE, enable);
@@ -2917,6 +3315,18 @@ static void oplus_wired_otg_enable_handler_work(struct work_struct *work)
 		chg_err("vooc_chg_auto_mode_votable not found\n");
 }
 
+static void oplus_wired_otg_enable_pending_work(struct work_struct *work)
+{
+	struct oplus_mms_wired *chip =
+		container_of(work, struct oplus_mms_wired, otg_enable_pending_work);
+
+	oplus_wired_clear_usb_status(chip, OTG_ENABLE_PENDING);
+	if (is_batt_psy_available(chip))
+		power_supply_changed(chip->batt_psy);
+	chg_info("schedule otg enable work\n");
+	schedule_delayed_work(&chip->otg_enable_handler_work, 0);
+}
+
 static void oplus_wired_data_role_changed_handler_work(struct work_struct *work)
 {
 	struct oplus_mms_wired *chip = container_of(
@@ -2930,6 +3340,8 @@ static void oplus_wired_data_role_changed_handler_work(struct work_struct *work)
 			       &enable);
 	if (rc < 0)
 		enable = false;
+	chg_info("enable=%d, otg_disbale_status = %d\n", enable, chip->otg_disbale_status);
+	enable &= !chip->otg_disbale_status;
 
 	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_GET_DATA_ROLE,
 			       (int *)&role);
@@ -2952,6 +3364,22 @@ static void oplus_wired_data_role_changed_handler_work(struct work_struct *work)
 	} else if (role == TYPEC_HOST) {
 		if (!IS_ERR(vooc_disable_votable))
 			vote(vooc_disable_votable, TYPEC_VOTER, true, 1, false);
+	}
+}
+
+static void oplus_wls_upgrading_work(struct work_struct *work)
+{
+	struct oplus_mms_wired *chip = container_of(work,
+			struct oplus_mms_wired, wls_upgrading_work);
+	union mms_msg_data data = { 0 };
+
+	oplus_mms_get_item_data(chip->wls_topic, WLS_ITEM_FW_UPGRADING, &data, false);
+	chip->wls_upgrading = data.intval;
+	chg_info("wls_upgrading value = %d\n", chip->wls_upgrading);
+	if (!chip->wls_upgrading) {
+		if (!chip->otg_online_status)
+			return;
+		schedule_delayed_work(&chip->otg_enable_handler_work, 0);
 	}
 }
 
@@ -3040,7 +3468,7 @@ static void oplus_back_ui_soc_work(struct work_struct *work)
 
 
 static void oplus_wired_vooc_subs_callback(struct mms_subscribe *subs,
-					   enum mms_msg_type type, u32 id)
+					   enum mms_msg_type type, u32 id, bool sync)
 {
 	struct oplus_mms_wired *chip = subs->priv_data;
 	union mms_msg_data data = { 0 };
@@ -3067,7 +3495,8 @@ static void oplus_wired_vooc_subs_callback(struct mms_subscribe *subs,
 			oplus_mms_get_item_data(chip->vooc_topic, id, &data,
 						false);
 			chip->vooc_sid = (unsigned int)data.intval;
-			schedule_work(&chip->chg_type_change_handler_work);
+			if (!chip->cpa_support)
+				schedule_work(&chip->chg_type_change_handler_work);
 			break;
 		case VOOC_ITEM_ONLINE_KEEP:
 			oplus_mms_get_item_data(chip->vooc_topic, id, &data,
@@ -3117,7 +3546,7 @@ static void oplus_wired_subscribe_vooc_topic(struct oplus_mms *topic,
 }
 
 static void oplus_wired_comm_subs_callback(struct mms_subscribe *subs,
-					 enum mms_msg_type type, u32 id)
+					   enum mms_msg_type type, u32 id, bool sync)
 {
 	struct oplus_mms_wired *chip = subs->priv_data;
 	union mms_msg_data data = { 0 };
@@ -3169,6 +3598,130 @@ static void oplus_wired_subscribe_comm_topic(struct oplus_mms *topic,
 				true);
 	chip->shell_temp = data.intval;
 }
+
+static void oplus_wired_cpa_subs_callback(struct mms_subscribe *subs,
+					  enum mms_msg_type type, u32 id, bool sync)
+{
+	struct oplus_mms_wired *chip = subs->priv_data;
+
+	switch (type) {
+	case MSG_TYPE_ITEM:
+		switch (id) {
+		case CPA_ITEM_CHG_TYPE:
+			schedule_work(&chip->cpa_chg_type_change_handler_work);
+			break;
+		default:
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void oplus_wired_subscribe_cpa_topic(struct oplus_mms *topic,
+					    void *prv_data)
+{
+	struct oplus_mms_wired *chip = prv_data;
+
+	chip->cpa_topic = topic;
+	chip->cpa_subs = oplus_mms_subscribe(chip->cpa_topic, chip,
+					     oplus_wired_cpa_subs_callback,
+					     "mms_wired");
+	if (IS_ERR_OR_NULL(chip->cpa_subs)) {
+		chg_err("subscribe cpa topic error, rc=%ld\n",
+			PTR_ERR(chip->cpa_subs));
+		return;
+	}
+}
+
+static void oplus_wired_ufcs_subs_callback(struct mms_subscribe *subs,
+					   enum mms_msg_type type, u32 id, bool sync)
+{
+	struct oplus_mms_wired *chip = subs->priv_data;
+	union mms_msg_data data = { 0 };
+
+	switch (type) {
+	case MSG_TYPE_ITEM:
+		switch (id) {
+		case UFCS_ITEM_ONLINE:
+			oplus_mms_get_item_data(chip->ufcs_topic, id, &data, false);
+			chip->ufcs_online = !!data.intval;
+			break;
+		default:
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void oplus_wired_subscribe_ufcs_topic(struct oplus_mms *topic,
+					     void *prv_data)
+{
+	struct oplus_mms_wired *chip = prv_data;
+	union mms_msg_data data = { 0 };
+
+	chip->ufcs_topic = topic;
+	chip->ufcs_subs = oplus_mms_subscribe(chip->ufcs_topic, chip,
+					      oplus_wired_ufcs_subs_callback,
+					      "mms_wired");
+	if (IS_ERR_OR_NULL(chip->ufcs_subs)) {
+		chg_err("subscribe ufcs topic error, rc=%ld\n", PTR_ERR(chip->ufcs_subs));
+		return;
+	}
+
+	oplus_mms_get_item_data(chip->ufcs_topic, UFCS_ITEM_ONLINE, &data, true);
+	chip->ufcs_online = !!data.intval;
+};
+
+static void oplus_wired_wls_subs_callback(struct mms_subscribe *subs,
+					     enum mms_msg_type type, u32 id, bool sync)
+{
+	struct oplus_mms_wired *chip = subs->priv_data;
+	union mms_msg_data data = { 0 };
+
+	switch (type) {
+	case MSG_TYPE_ITEM:
+		switch (id) {
+		case WLS_ITEM_PRESENT:
+			oplus_mms_get_item_data(chip->wls_topic, id, &data, false);
+			chip->wls_online = !!data.intval;
+			if (!chip->wls_online && chip->otg_enable_pending) {
+				chip->otg_enable_pending = false;
+				schedule_work(&chip->otg_enable_pending_work);
+			}
+			break;
+		case WLS_ITEM_FW_UPGRADING:
+			schedule_work(&chip->wls_upgrading_work);
+			break;
+		default:
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void oplus_wired_subscribe_wls_topic(struct oplus_mms *topic, void *prv_data)
+{
+	struct oplus_mms_wired *chip = prv_data;
+	union mms_msg_data data = { 0 };
+
+	chip->wls_topic = topic;
+	chip->wls_subs = oplus_mms_subscribe(chip->wls_topic, chip,
+					      oplus_wired_wls_subs_callback,
+					      "mms_wired");
+	if (IS_ERR_OR_NULL(chip->wls_subs)) {
+		chg_err("subscribe wls topic error, rc=%ld\n", PTR_ERR(chip->wls_subs));
+		return;
+	}
+
+	oplus_mms_get_item_data(chip->wls_topic, WLS_ITEM_PRESENT, &data, true);
+	chip->wls_online = !!data.intval;
+};
 
 static int oplus_mms_wired_virq_register(struct oplus_mms_wired *chip);
 static int oplus_mms_wired_topic_init(struct oplus_mms_wired *chip);
@@ -3239,6 +3792,9 @@ static void oplus_mms_wired_init_work(struct work_struct *work)
 	oplus_mms_wait_topic("gauge", oplus_wired_subscribe_gauge_topic, chip);
 	oplus_mms_wait_topic("vooc", oplus_wired_subscribe_vooc_topic, chip);
 	oplus_mms_wait_topic("common", oplus_wired_subscribe_comm_topic, chip);
+	oplus_mms_wait_topic("cpa", oplus_wired_subscribe_cpa_topic, chip);
+	oplus_mms_wait_topic("ufcs", oplus_wired_subscribe_ufcs_topic, chip);
+	oplus_mms_wait_topic("wireless", oplus_wired_subscribe_wls_topic, chip);
 
 	oplus_chg_ic_virq_trigger(chip->buck_ic, OPLUS_IC_VIRQ_CC_DETECT);
 	if (oplus_wired_is_present())
@@ -3277,6 +3833,50 @@ static void oplus_mms_wired_bcc_parms_reset(struct oplus_mms_wired *chip)
 	chip->bcc_curr_done = BCC_CURR_DONE_UNKNOW;
 }
 
+static void oplus_mms_wired_online_status_err_work(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct oplus_mms_wired *chip =
+		container_of(dwork, struct oplus_mms_wired, wam.online_status_err_work);
+	struct oplus_mms_wired_abnormal_monitor *wam = &chip->wam;
+	struct mms_msg *msg;
+	bool present;
+	int hw_detect;
+	int rc;
+	bool report = false;
+
+	present = oplus_wired_is_present();
+	hw_detect = oplus_wired_get_hw_detect();
+	if (chip->wired_online == present) {
+		wam->online_status_err_count = 0;
+		return;
+	}
+
+	if (wam->online_status_err_count >= ONLINE_STATUS_ERR_CHECK_MAX)
+		report = true;
+	if (report) {
+		chg_err("report wired online status error, wired_online=%d, vooc_online=%d, vooc_online_keep=%d\r\n",
+			chip->wired_online, chip->vooc_online, chip->vooc_online_keep);
+		msg = oplus_mms_alloc_int_msg(MSG_TYPE_ITEM, MSG_PRIO_MEDIUM,
+					      WIRED_ITEM_ONLINE_STATUS_ERR, 1);
+		if (msg == NULL) {
+			chg_err("alloc msg error\n");
+		} else {
+			rc = oplus_mms_publish_msg(chip->wired_topic, msg);
+			if (rc < 0) {
+				chg_err("publish online status err msg error, rc=%d\n", rc);
+				kfree(msg);
+			}
+		}
+		wam->online_status_err_count = 0;
+		return;
+	}
+
+	wam->online_status_err_count++;
+	schedule_delayed_work(&wam->online_status_err_work,
+		msecs_to_jiffies(ONLINE_STATUS_ERR_CHECK_DELAY_MS));
+}
+
 static void oplus_mms_wired_plugin_handler_work(struct work_struct *work)
 {
 	struct oplus_mms_wired *chip =
@@ -3286,6 +3886,7 @@ static void oplus_mms_wired_plugin_handler_work(struct work_struct *work)
 	bool online, present;
 	bool present_changed = false;
 	enum typec_data_role role;
+	struct votable *pd_boost_disable_votable;
 	int rc;
 
 	if (chip->wired_topic == NULL) {
@@ -3296,9 +3897,9 @@ static void oplus_mms_wired_plugin_handler_work(struct work_struct *work)
 	if (chip->vooc_topic) {
 		oplus_mms_get_item_data(chip->vooc_topic, VOOC_ITEM_ONLINE_KEEP,
 					&data, false);
-		chip->vooc_online = data.intval;
+		chip->vooc_online_keep = data.intval;
 	} else {
-		chip->vooc_online = false;
+		chip->vooc_online_keep = false;
 	}
 
 	present = oplus_wired_is_present();
@@ -3309,6 +3910,8 @@ static void oplus_mms_wired_plugin_handler_work(struct work_struct *work)
 		chg_info("wired_present=%d\n", present);
 		chip->wired_present = present;
 		present_changed = true;
+		if (!present)
+			oplus_wired_set_aicl_point();
 		msg = oplus_mms_alloc_msg(MSG_TYPE_ITEM, MSG_PRIO_MEDIUM,
 					  WIRED_ITEM_PRESENT);
 		if (msg == NULL) {
@@ -3327,9 +3930,16 @@ static void oplus_mms_wired_plugin_handler_work(struct work_struct *work)
 	oplus_mms_wired_bcc_parms_reset(chip);
 
 skip_present:
-	online = present || chip->vooc_online;
-	chg_info("present=%d, vooc_online=%d, pre_online=%d", present,
-		 chip->vooc_online, chip->wired_online);
+	online = present || chip->vooc_online_keep;
+	chg_info("present=%d, vooc_online_keep=%d, pre_online=%d", present,
+		 chip->vooc_online_keep, chip->wired_online);
+	if (online != present) {
+		if (!(work_busy(&chip->wam.online_status_err_work.work)))
+			schedule_delayed_work(&chip->wam.online_status_err_work, 0);
+	} else {
+		cancel_delayed_work_sync(&chip->wam.online_status_err_work);
+		chip->wam.online_status_err_count = 0;
+	}
 	if (chip->wired_online == online) {
 		chip->usbtemp_curr_status = 0;
 		/*
@@ -3343,6 +3953,9 @@ skip_present:
 		/* Ensure the charging status and current are reset */
 		if (present && is_chg_suspend_votable_available(chip))
 			rerun_election(chip->chg_suspend_votable, false);
+		/* some IC will auto enable charge when vbus rise, ensure the charing status reset */
+		if (present && is_chg_disable_votable_available(chip))
+			rerun_election(chip->chg_disable_votable, false);
 		goto check_data_role;
 	}
 
@@ -3368,6 +3981,12 @@ skip_present:
 	}
 
 check_data_role:
+	pd_boost_disable_votable = find_votable("PD_BOOST_DISABLE");
+	if (chip->wired_online && pd_boost_disable_votable &&
+	    get_client_vote(pd_boost_disable_votable, SVID_VOTER) > 0) {
+		chg_err("rerun svid_handler_work\n");
+		schedule_delayed_work(&chip->svid_handler_work, 0);
+	}
 	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_GET_DATA_ROLE,
 			       (int *)&role);
 	if (rc < 0) {
@@ -3389,6 +4008,8 @@ oplus_mms_wired_chg_type_change_handler_work(struct work_struct *work)
 		work, struct oplus_mms_wired, chg_type_change_handler_work);
 	struct mms_msg *msg;
 	int rc;
+	int real_chg_type;
+	union mms_msg_data data = { 0 };
 
 	if (chip->wired_topic == NULL) {
 		chg_err("wired_topic not ready\n");
@@ -3398,6 +4019,46 @@ oplus_mms_wired_chg_type_change_handler_work(struct work_struct *work)
 	if (chip->wired_online != oplus_wired_is_present())
 		oplus_chg_ic_virq_trigger(chip->buck_ic, OPLUS_IC_VIRQ_PLUGIN);
 
+	real_chg_type = oplus_wired_get_real_chg_type(chip);
+	chg_info("real_type=%s\n", oplus_wired_get_chg_type_str(oplus_wired_get_real_chg_type(chip)));
+	msg = oplus_mms_alloc_msg(MSG_TYPE_ITEM, MSG_PRIO_MEDIUM,
+				  chip->cpa_support ? WIRED_ITEM_REAL_CHG_TYPE : WIRED_ITEM_CHG_TYPE);
+	if (msg == NULL) {
+		chg_err("alloc msg error\n");
+		return;
+	}
+	rc = oplus_mms_publish_msg(chip->wired_topic, msg);
+	if (rc < 0) {
+		chg_err("publish charge type change msg error, rc=%d\n", rc);
+		kfree(msg);
+	}
+
+	if (chip->cpa_support && chip->cpa_topic &&
+	    (real_chg_type == OPLUS_CHG_USB_TYPE_PD || real_chg_type == OPLUS_CHG_USB_TYPE_PD_PPS)) {
+		oplus_mms_get_item_data(chip->cpa_topic, CPA_ITEM_ALLOW, &data, true);
+		if (data.intval != CHG_PROTOCOL_PD) {
+			oplus_cpa_request(chip->cpa_topic, CHG_PROTOCOL_PD);
+			chg_info("pd message came late. Retry arbitration.\n");
+		} else {
+			chg_info("%s message came late. do nothing.\n",
+				 real_chg_type == OPLUS_CHG_USB_TYPE_PD ? "PD" : "PPS");
+		}
+	}
+}
+
+static void
+oplus_mms_wired_cpa_chg_type_change_handler_work(struct work_struct *work)
+{
+	struct oplus_mms_wired *chip = container_of(
+		work, struct oplus_mms_wired, cpa_chg_type_change_handler_work);
+	struct mms_msg *msg;
+	int rc;
+
+	if (chip->wired_topic == NULL) {
+		chg_err("wired_topic not ready\n");
+		return;
+	}
+
 	msg = oplus_mms_alloc_msg(MSG_TYPE_ITEM, MSG_PRIO_MEDIUM,
 				  WIRED_ITEM_CHG_TYPE);
 	if (msg == NULL) {
@@ -3406,7 +4067,7 @@ oplus_mms_wired_chg_type_change_handler_work(struct work_struct *work)
 	}
 	rc = oplus_mms_publish_msg(chip->wired_topic, msg);
 	if (rc < 0) {
-		chg_err("publish charge type change msg error, rc=%d\n", rc);
+		chg_err("publish cpa charge type change msg error, rc=%d\n", rc);
 		kfree(msg);
 	}
 }
@@ -3420,7 +4081,7 @@ static void oplus_mms_wired_ccdetect_work(struct work_struct *work)
 	int hw_detect;
 	int rc;
 
-	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_BUCK_GET_HW_DETECT, &hw_detect);
+	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_BUCK_GET_HW_DETECT, &hw_detect, false);
 	if (rc < 0) {
 		chg_err("can't get hw detect status, rc=%d\n", rc);
 		return;
@@ -3432,6 +4093,10 @@ static void oplus_mms_wired_ccdetect_work(struct work_struct *work)
 		if (chip->usb_status == USB_TEMP_HIGH) {
 			cancel_delayed_work(&chip->usbtemp_recover_work);
 			schedule_delayed_work(&chip->usbtemp_recover_work, 0);
+		}
+		if (chip->wired_online && !chip->usbtemp_check) {
+			chip->usbtemp_check = true;
+			oplus_wake_up_usbtemp_thread(chip);
 		}
 	} else {
 		chip->usbtemp_check = false;
@@ -3497,7 +4162,7 @@ static void oplus_mms_wired_typec_state_change_work(struct work_struct *work)
 	int hw_detect;
 	int rc;
 
-	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_BUCK_GET_HW_DETECT, &hw_detect);
+	rc = oplus_chg_ic_func(chip->buck_ic, OPLUS_IC_FUNC_BUCK_GET_HW_DETECT, &hw_detect, false);
 	if (rc < 0) {
 		chg_err("can't get hw detect status, rc=%d\n", rc);
 		return;
@@ -3585,11 +4250,16 @@ static void oplus_wired_svid_handler(struct oplus_chg_ic_dev *ic_dev,
 	schedule_delayed_work(&chip->svid_handler_work, 0);
 }
 
+#define OTG_ENABLE_DELAY_MS	1000
 static void oplus_wired_otg_enable_handler(struct oplus_chg_ic_dev *ic_dev,
 					   void *virq_data)
 {
 	struct oplus_mms_wired *chip = virq_data;
-	schedule_work(&chip->otg_enable_handler_work);
+	unsigned long otg_enable_delay_jiffies = 0;
+
+	if (chip->support_wlsotg_non_coexistence && !oplus_wls_init_complete(chip))
+		otg_enable_delay_jiffies = msecs_to_jiffies(OTG_ENABLE_DELAY_MS);
+	schedule_delayed_work(&chip->otg_enable_handler_work, otg_enable_delay_jiffies);
 }
 
 #define CCDETECT_DELAY_MS	50
@@ -3722,7 +4392,7 @@ static int oplus_mms_wired_update_present(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3731,8 +4401,6 @@ static int oplus_mms_wired_update_present(struct oplus_mms *mms,
 	chip = oplus_mms_get_drvdata(mms);
 
 	present = chip->wired_present;
-
-end:
 	data->intval = present;
 	return 0;
 }
@@ -3745,7 +4413,7 @@ static int oplus_mms_wired_update_online(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3754,8 +4422,6 @@ static int oplus_mms_wired_update_online(struct oplus_mms *mms,
 	chip = oplus_mms_get_drvdata(mms);
 
 	present = chip->wired_online;
-
-end:
 	data->intval = present;
 	return 0;
 }
@@ -3768,7 +4434,7 @@ static int oplus_mms_wired_update_chg_type(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3778,12 +4444,12 @@ static int oplus_mms_wired_update_chg_type(struct oplus_mms *mms,
 
 	type = oplus_wired_get_chg_type();
 	if (type < 0) {
-		chg_err("can't get charger type, rc=%d", type);
+		chg_err("can't get charger type, rc=%s", oplus_wired_get_chg_type_str(type));
 		goto end;
 	}
 
 end:
-	chg_info("chg_type update to %d\n", type);
+	chg_info("chg_type update to %s\n", oplus_wired_get_chg_type_str(type));
 	data->intval = type;
 	return 0;
 }
@@ -3796,7 +4462,7 @@ static int oplus_mms_wired_update_bc12_completed(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3805,8 +4471,6 @@ static int oplus_mms_wired_update_bc12_completed(struct oplus_mms *mms,
 	chip = oplus_mms_get_drvdata(mms);
 
 	bc12_completed = chip->bc12_completed;
-
-end:
 	data->intval = bc12_completed;
 	return 0;
 }
@@ -3828,7 +4492,7 @@ static int oplus_mms_wired_update_cc_detect(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3838,7 +4502,7 @@ static int oplus_mms_wired_update_cc_detect(struct oplus_mms *mms,
 
 	rc = oplus_chg_ic_func(chip->buck_ic,
 			       OPLUS_IC_FUNC_BUCK_GET_HW_DETECT,
-			       &cc_detect);
+			       &cc_detect, false);
 	if (rc < 0) {
 		chg_err("can't get cc detect status, rc=%d\n", rc);
 		cc_detect_status = CC_DETECT_NULL;
@@ -3863,7 +4527,7 @@ static int oplus_mms_wired_update_usb_status(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3872,7 +4536,6 @@ static int oplus_mms_wired_update_usb_status(struct oplus_mms *mms,
 	chip = oplus_mms_get_drvdata(mms);
 
 	usb_status = (int)chip->usb_status;
-end:
 	data->intval = usb_status;
 	return 0;
 }
@@ -3886,7 +4549,7 @@ static int oplus_mms_wired_update_usb_temp_volt_l(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3895,7 +4558,6 @@ static int oplus_mms_wired_update_usb_temp_volt_l(struct oplus_mms *mms,
 	chip = oplus_mms_get_drvdata(mms);
 
 	volt = chip->usbtemp_volt_l;
-end:
 	data->intval = volt;
 	return 0;
 }
@@ -3908,7 +4570,7 @@ static int oplus_mms_wired_update_usb_temp_volt_r(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3917,7 +4579,6 @@ static int oplus_mms_wired_update_usb_temp_volt_r(struct oplus_mms *mms,
 	chip = oplus_mms_get_drvdata(mms);
 
 	volt = chip->usbtemp_volt_r;
-end:
 	data->intval = volt;
 	return 0;
 }
@@ -3930,7 +4591,7 @@ static int oplus_mms_wired_update_usb_temp_l(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3939,7 +4600,6 @@ static int oplus_mms_wired_update_usb_temp_l(struct oplus_mms *mms,
 	chip = oplus_mms_get_drvdata(mms);
 
 	temp = chip->usb_temp_l;
-end:
 	data->intval = temp;
 	return 0;
 }
@@ -3952,7 +4612,7 @@ static int oplus_mms_wired_update_usb_temp_r(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3961,8 +4621,26 @@ static int oplus_mms_wired_update_usb_temp_r(struct oplus_mms *mms,
 	chip = oplus_mms_get_drvdata(mms);
 
 	temp = chip->usb_temp_l;
-end:
 	data->intval = temp;
+	return 0;
+}
+
+static int oplus_mms_wired_update_pre_otg_enable_status(struct oplus_mms *mms, union mms_msg_data *data)
+{
+	struct oplus_mms_wired *chip;
+
+	if (mms == NULL) {
+		chg_err("mms is NULL");
+		return -EINVAL;
+	}
+	if (data == NULL) {
+		chg_err("data is NULL");
+		return -EINVAL;
+	}
+	chip = oplus_mms_get_drvdata(mms);
+	/*enable = chip->pre_otg_enable;
+	data->intval = enable;*/
+
 	return 0;
 }
 
@@ -3974,7 +4652,7 @@ static int oplus_mms_wired_update_otg_enable_status(struct oplus_mms *mms,
 
 	if (mms == NULL) {
 		chg_err("mms is NULL");
-		goto end;
+		return -EINVAL;
 	}
 	if (data == NULL) {
 		chg_err("data is NULL");
@@ -3983,7 +4661,6 @@ static int oplus_mms_wired_update_otg_enable_status(struct oplus_mms *mms,
 	chip = oplus_mms_get_drvdata(mms);
 
 	enable = chip->otg_enable;
-end:
 	data->intval = enable;
 	return 0;
 }
@@ -4060,7 +4737,6 @@ int oplus_wired_get_bcc_curr_done_status(struct oplus_mms *topic)
 	ret = chip->bcc_curr_done;
 	mutex_unlock(&chip->bcc_curr_done_mutex);
 
-	chg_err("bcc_curr_done:%d\n", ret);
 	return ret;
 }
 
@@ -4168,8 +4844,138 @@ static int oplus_mms_get_typec_state(struct oplus_mms *mms,
 	data->intval = typec_state;
 
 	return 0;
-
 }
+
+static int oplus_mms_wired_update_real_chg_type(
+	struct oplus_mms *mms, union mms_msg_data *data)
+{
+	struct oplus_mms_wired *chip;
+	int type = OPLUS_CHG_USB_TYPE_UNKNOWN;
+
+	if (mms == NULL) {
+		chg_err("mms is NULL");
+		return -EINVAL;
+	}
+	if (data == NULL) {
+		chg_err("data is NULL");
+		return -EINVAL;
+	}
+	chip = oplus_mms_get_drvdata(mms);
+
+	type = oplus_wired_get_real_chg_type(chip);
+	if (type < 0) {
+		chg_err("can't get real charger type, rc=%d", type);
+		return type;
+	}
+
+	chg_info("real chg_type update to %s\n", oplus_wired_get_chg_type_str(type));
+	data->intval = type;
+	return 0;
+}
+
+static int oplus_mms_wired_update_charging_disable(
+	struct oplus_mms *mms, union mms_msg_data *data)
+{
+	struct oplus_mms_wired *chip;
+
+	if (mms == NULL) {
+		chg_err("mms is NULL");
+		return -EINVAL;
+	}
+	if (data == NULL) {
+		chg_err("data is NULL");
+		return -EINVAL;
+	}
+	chip = oplus_mms_get_drvdata(mms);
+	data->intval = chip->charging_disable;
+
+	return 0;
+}
+
+static int oplus_mms_wired_update_coexistence(struct oplus_mms *mms, union mms_msg_data *data)
+{
+	struct oplus_mms_wired *chip;
+
+	if (mms == NULL) {
+		chg_err("mms is NULL");
+		return -EINVAL;
+	}
+	if (data == NULL) {
+		chg_err("data is NULL");
+		return -EINVAL;
+	}
+	chip = oplus_mms_get_drvdata(mms);
+	data->intval = chip->support_wlsotg_non_coexistence;
+
+	return 0;
+}
+
+static int oplus_mms_wired_vbus(
+	struct oplus_mms *mms, union mms_msg_data *data)
+{
+	int vbus;
+
+	vbus = oplus_wired_get_vbus();
+	if (vbus < 0) {
+		chg_err("can't get real charger vbus, rc=%d", vbus);
+		return vbus;
+	}
+
+	data->intval = vbus;
+
+	return 0;
+}
+
+int oplus_wired_get_byb_id_info(struct oplus_mms *topic)
+{
+	int rc = 0;
+	struct oplus_mms_wired *chip;
+	int bybid_info = 0;
+
+	if (topic == NULL) {
+		chg_err("mms is NULL");
+		return -EINVAL;
+	}
+	chip = oplus_mms_get_drvdata(topic);
+
+	rc = oplus_chg_ic_func(chip->buck_ic,
+			       OPLUS_IC_FUNC_BUCK_GET_BYBID_INFO,
+			       &bybid_info);
+	if (rc < 0) {
+		if (rc != -ENOTSUPP)
+			chg_err("can't get bybid info, rc=%d\n", rc);
+
+		return GPIO_STATUS_NOT_SUPPORT;
+	}
+
+	return bybid_info;
+}
+
+int oplus_wired_get_byb_id_match_info(struct oplus_mms *topic)
+{
+	int rc = 0;
+	struct oplus_mms_wired *chip;
+	int bybid_match_info = ID_MATCH_IGNORE;
+
+	if (topic == NULL) {
+		chg_err("mms is NULL");
+		return ID_MATCH_IGNORE;
+	}
+	chip = oplus_mms_get_drvdata(topic);
+
+	rc = oplus_chg_ic_func(chip->buck_ic,
+			       OPLUS_IC_FUNC_BUCK_GET_BYBID_MATCH_INFO,
+			       &bybid_match_info);
+	if (rc < 0) {
+		if (rc != -ENOTSUPP)
+			chg_err("can't get bybid match info, rc=%d\n", rc);
+
+		return ID_MATCH_IGNORE;
+	}
+
+	return bybid_match_info;
+}
+
 
 static void oplus_mms_wired_update(struct oplus_mms *mms, bool publish)
 {
@@ -4298,6 +5104,16 @@ static struct mms_item oplus_mms_wired_item[] = {
 	},
 	{
 		.desc = {
+			.item_id = WIRED_ITEM_PRE_OTG_ENABLE,
+			.str_data = false,
+			.up_thr_enable = false,
+			.down_thr_enable = false,
+			.dead_thr_enable = false,
+			.update = oplus_mms_wired_update_pre_otg_enable_status,
+		}
+	},
+	{
+		.desc = {
 			.item_id = WIRED_ITEM_OTG_ENABLE,
 			.str_data = false,
 			.up_thr_enable = false,
@@ -4356,6 +5172,56 @@ static struct mms_item oplus_mms_wired_item[] = {
 			.update = oplus_mms_get_typec_state,
 		}
 	},
+	{
+		.desc = {
+			.item_id = WIRED_ITEM_REAL_CHG_TYPE,
+			.str_data = false,
+			.up_thr_enable = false,
+			.down_thr_enable = false,
+			.dead_thr_enable = false,
+			.update = oplus_mms_wired_update_real_chg_type,
+		}
+	},
+	{
+		.desc = {
+			.item_id = WIRED_ITEM_VBUS,
+			.str_data = false,
+			.up_thr_enable = false,
+			.down_thr_enable = false,
+			.dead_thr_enable = false,
+			.update = oplus_mms_wired_vbus,
+		}
+	},
+	{
+		.desc = {
+			.item_id = WIRED_ITEM_ONLINE_STATUS_ERR,
+			.str_data = false,
+			.up_thr_enable = false,
+			.down_thr_enable = false,
+			.dead_thr_enable = false,
+			.update = NULL,
+		}
+	},
+	{
+		.desc = {
+			.item_id = WIRED_ITEM_CHARGING_DISABLE,
+			.str_data = false,
+			.up_thr_enable = false,
+			.down_thr_enable = false,
+			.dead_thr_enable = false,
+			.update = oplus_mms_wired_update_charging_disable,
+		}
+	},
+	{
+		.desc = {
+			.item_id = WIRED_ITEM_COEXISTENCE,
+			.str_data = false,
+			.up_thr_enable = false,
+			.down_thr_enable = false,
+			.dead_thr_enable = false,
+			.update = oplus_mms_wired_update_coexistence,
+		}
+	},
 };
 
 static const struct oplus_mms_desc oplus_mms_wired_desc = {
@@ -4399,6 +5265,37 @@ static int oplus_mms_wired_topic_init(struct oplus_mms_wired *chip)
 	return 0;
 }
 
+static bool oplus_mms_wired_parse_from_cmdline(struct oplus_mms_wired *chip)
+{
+	struct device_node *np;
+	const char *bootparams = NULL;
+	char *str;
+	int ret = 0;
+	struct oplus_usbtemp_spec_config *spec = &chip->usbtemp_spec;
+
+	if (chip == NULL)
+		return false;
+
+	np = of_find_node_by_path("/chosen");
+	if (np) {
+		ret = of_property_read_string(np, "bootargs", &bootparams);
+		if (!bootparams || ret < 0) {
+			chg_err("failed to get bootargs property");
+			return false;
+		}
+
+		str = strstr(bootparams, "support_hot_enter_kpoc=1");
+		if (str) {
+			spec->support_hot_enter_kpoc = true;
+		} else {
+			spec->support_hot_enter_kpoc = false;
+		}
+	}
+
+	chg_err("support_hot_enter_kpoc=%d", spec->support_hot_enter_kpoc);
+	return false;
+}
+
 static void oplus_mms_wired_usbtemp_v2_parse_dt(struct oplus_mms_wired *chip)
 {
 	struct oplus_usbtemp_spec_config *spec = &chip->usbtemp_spec;
@@ -4413,6 +5310,10 @@ static void oplus_mms_wired_usbtemp_v2_parse_dt(struct oplus_mms_wired *chip)
 	if (rc)
 		spec->usbtemp_batt_temp_high = OPCHG_USBTEMP_BATT_TEMP_HIGH;
 
+	rc = of_property_read_u32(node, "oplus_spec,usbtemp_batt_temp_over_hot", &spec->usbtemp_batt_temp_over_hot);
+	if (rc)
+		spec->usbtemp_batt_temp_over_hot = OPCHG_USBTEMP_BATT_TEMP_OVER_HOT;
+
 	rc = of_property_read_u32(node, "oplus_spec,usbtemp_ntc_temp_low", &spec->usbtemp_ntc_temp_low);
 	if (rc)
 		spec->usbtemp_ntc_temp_low = OPCHG_USBTEMP_NTC_TEMP_LOW;
@@ -4425,6 +5326,11 @@ static void oplus_mms_wired_usbtemp_v2_parse_dt(struct oplus_mms_wired *chip)
 				  &spec->usbtemp_temp_gap_low_with_batt_temp);
 	if (rc)
 		spec->usbtemp_temp_gap_low_with_batt_temp = OPCHG_USBTEMP_GAP_LOW_WITH_BATT_TEMP;
+
+	rc = of_property_read_u32(node, "oplus_spec,usbtemp_temp_gap_with_batt_temp_in_over_hot",
+				  &spec->usbtemp_temp_gap_with_batt_temp_in_over_hot);
+	if (rc)
+		spec->usbtemp_temp_gap_with_batt_temp_in_over_hot = OPCHG_USBTEMP_GAP_WITH_BATT_TEMP_IN_OVER_HOT;
 
 	rc = of_property_read_u32(node, "oplus_spec,usbtemp_temp_gap_high_with_batt_temp",
 				  &spec->usbtemp_temp_gap_high_with_batt_temp);
@@ -4494,6 +5400,13 @@ static void oplus_mms_wired_usbtemp_v2_parse_dt(struct oplus_mms_wired *chip)
 				  &spec->usbtemp_cool_down_recover_gap_high);
 	if (rc)
 		spec->usbtemp_cool_down_recover_gap_high = OPCHG_USBTEMP_COOL_DOWN_RECOVER_GAP_HIGH;
+
+	rc = of_property_read_u32(node, "oplus_spec,usbtemp_otg_cc_boot_current_limit",
+				  &spec->usbtemp_otg_cc_boot_current_limit);
+	if (rc)
+		spec->usbtemp_otg_cc_boot_current_limit = OPCHG_USBTEMP_OTG_CC_BOOT_CURRENT_LIMIT;
+
+	oplus_mms_wired_parse_from_cmdline(chip);
 }
 
 static void oplus_mms_wired_parse_dt(struct oplus_mms_wired *chip)
@@ -4546,10 +5459,60 @@ static void oplus_mms_wired_parse_dt(struct oplus_mms_wired *chip)
 	if (rc)
 		spec->usbtemp_temp_up_time_thr = 30;
 
+	chip->support_wlsotg_non_coexistence = of_property_read_bool(node, "oplus,support_wlsotg_non_coexistence");
 	chip->support_usbtemp_protect_v2 = of_property_read_bool(node, "oplus,support_usbtemp_protect_v2");
-	chg_info("support_usbtemp_protect_v2=%s\n", chip->support_usbtemp_protect_v2 ? "true" : "false");
+	chg_info("support_usbtemp_protect_v2=%s, wlsotg_non_coexistence=%d\n",
+		chip->support_usbtemp_protect_v2 ? "true" : "false", chip->support_wlsotg_non_coexistence);
 	if (chip->support_usbtemp_protect_v2)
 		oplus_mms_wired_usbtemp_v2_parse_dt(chip);
+	chip->high_temp_scheme = of_property_read_bool(node, "high-temp-scheme");
+}
+
+static int oplus_wired_otg_disable_vote_callback(struct votable *votable,
+						 void *data, int disable,
+						 const char *client,
+						 bool step)
+{
+	struct oplus_mms_wired *chip = data;
+	bool enable;
+	int rc;
+
+	if (disable < 0)
+		chip->otg_disbale_status = false;
+	else
+		chip->otg_disbale_status = !!disable;
+	chg_info("otg_disable vote clent %s, status = %d\n", client, disable);
+
+
+	rc = oplus_chg_ic_func(chip->buck_ic,
+			       OPLUS_IC_FUNC_GET_OTG_ENABLE, &enable);
+	if (rc < 0)
+		enable = false;
+
+	if (enable) {
+		schedule_delayed_work(&chip->otg_enable_handler_work, 0);
+		schedule_work(&chip->data_role_changed_handler_work);
+	}
+
+	return rc;
+}
+
+static int oplus_mms_wired_votable_init(struct oplus_mms_wired *chip)
+{
+	int rc;
+
+	chip->otg_disable_votable =
+		create_votable("OTG_DISABLE", VOTE_SET_ANY,
+			       oplus_wired_otg_disable_vote_callback, chip);
+	if (IS_ERR(chip->otg_disable_votable)) {
+		rc = PTR_ERR(chip->otg_disable_votable);
+		chg_err("otg_disable_votable create error, rc=%d\n", rc);
+		chip->otg_disable_votable = NULL;
+		return rc;
+	}
+	vote(chip->otg_disable_votable, DEF_VOTER, false, false, false);
+
+	return 0;
 }
 
 static int oplus_mms_wired_probe(struct platform_device *pdev)
@@ -4571,6 +5534,10 @@ static int oplus_mms_wired_probe(struct platform_device *pdev)
 
 	of_platform_populate(chip->dev->of_node, NULL, NULL, chip->dev);
 	oplus_mms_wired_parse_dt(chip);
+	rc = oplus_mms_wired_votable_init(chip);
+	if (rc < 0)
+		goto votable_init_err;
+
 	rc = of_property_read_string(chip->dev->of_node, "oplus,adc_info_name", &name);
 	if (rc < 0) {
 		chg_err("read oplus,adc_info_name error, rc=%d\n", rc);
@@ -4593,21 +5560,27 @@ static int oplus_mms_wired_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&chip->typec_state_notify_work, oplus_mms_wired_typec_state_notify_work);
 	INIT_DELAYED_WORK(&chip->typec_state_change_work, oplus_mms_wired_typec_state_change_work);
 	INIT_DELAYED_WORK(&chip->svid_handler_work, oplus_mms_wired_svid_handler_work);
+	INIT_DELAYED_WORK(&chip->wam.online_status_err_work, oplus_mms_wired_online_status_err_work);
 	INIT_WORK(&chip->err_handler_work, oplus_mms_wired_err_handler_work);
 	INIT_WORK(&chip->plugin_handler_work,
 		  oplus_mms_wired_plugin_handler_work);
 	INIT_WORK(&chip->chg_type_change_handler_work,
 		  oplus_mms_wired_chg_type_change_handler_work);
+	INIT_WORK(&chip->cpa_chg_type_change_handler_work,
+		  oplus_mms_wired_cpa_chg_type_change_handler_work);
 	INIT_WORK(&chip->gauge_update_work, oplus_wired_gauge_update_work);
-	INIT_WORK(&chip->otg_enable_handler_work, oplus_wired_otg_enable_handler_work);
+	INIT_DELAYED_WORK(&chip->otg_enable_handler_work, oplus_wired_otg_enable_handler_work);
 	INIT_WORK(&chip->voltage_change_work, oplus_wired_voltage_change_work);
 	INIT_WORK(&chip->current_change_work, oplus_wired_current_change_work);
 	INIT_WORK(&chip->bc12_completed_work, oplus_wired_bc12_completed_work);
 	INIT_WORK(&chip->data_role_changed_handler_work,
 		  oplus_wired_data_role_changed_handler_work);
 	INIT_WORK(&chip->back_ui_soc_work, oplus_back_ui_soc_work);
+	INIT_WORK(&chip->otg_enable_pending_work, oplus_wired_otg_enable_pending_work);
+	INIT_WORK(&chip->wls_upgrading_work, oplus_wls_upgrading_work);
 
 	chip->dischg_flag = false;
+	chip->cpa_support = oplus_cpa_support();
 
 	schedule_delayed_work(&chip->mms_wired_init_work, 0);
 
@@ -4616,6 +5589,11 @@ static int oplus_mms_wired_probe(struct platform_device *pdev)
 
 	chg_info("probe success\n");
 	return 0;
+
+votable_init_err:
+	platform_set_drvdata(pdev, NULL);
+	devm_kfree(&pdev->dev, chip);
+	return rc;
 }
 
 static int oplus_mms_wired_remove(struct platform_device *pdev)
@@ -4624,6 +5602,8 @@ static int oplus_mms_wired_remove(struct platform_device *pdev)
 
 	if (!IS_ERR_OR_NULL(chip->gauge_subs))
 		oplus_mms_unsubscribe(chip->gauge_subs);
+	if (chip->otg_disable_votable != NULL)
+		destroy_votable(chip->otg_disable_votable);
 	devm_kfree(&pdev->dev, chip);
 	platform_set_drvdata(pdev, NULL);
 
