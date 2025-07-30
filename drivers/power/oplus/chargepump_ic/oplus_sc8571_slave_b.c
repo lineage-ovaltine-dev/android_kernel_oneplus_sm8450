@@ -347,18 +347,7 @@ bool sc8571_slave_b_get_enable(void)
 
 void sc8571_slave_b_pmid2vout_enable(bool enable)
 {
-	return;/*return temporary*/
-	if (!chip_sc8571_slave_b) {
-		pps_err("chip is NULL\n");
-		return;
-	}
-
-	if (enable == false)
-		sc8571_write_byte(SC8571_REG_41,
-				  0x20); /*0X41 disable pmid2vout*/
-	else
-		sc8571_write_byte(SC8571_REG_41,
-				  0x00); /*0X41 enable pmid2vout*/
+	/*do nothing now*/
 }
 
 void sc8571_slave_b_cfg_sc(void)
@@ -603,9 +592,12 @@ static int sc8571_slave_b_parse_dt(struct chip_sc8571 *chip)
 	return 0;
 }
 
-
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+static int sc8571_slave_b_probe(struct i2c_client *client)
+#else
 static int sc8571_slave_b_probe(struct i2c_client *client,
                                 const struct i2c_device_id *id)
+#endif
 {
 	struct chip_sc8571 *chip;
 

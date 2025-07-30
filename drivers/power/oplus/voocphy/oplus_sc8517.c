@@ -21,6 +21,7 @@
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
 #include <linux/err.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/machine.h>
@@ -36,6 +37,7 @@
 #include "../oplus_gauge.h"
 #include "../oplus_charger.h"
 #include "oplus_sc8517.h"
+#include "../oplus_chg_module.h"
 
 static struct oplus_voocphy_manager *oplus_voocphy_mg = NULL;
 static struct mutex i2c_rw_lock;
@@ -312,11 +314,8 @@ static void sc8517_track_i2c_err_load_trigger_work(struct work_struct *work)
 			container_of(dwork, struct oplus_voocphy_manager,
 			i2c_err_load_trigger_work);
 
-	if (!chip)
-		return;
-
-	oplus_chg_track_upload_trigger_data(*(chip->i2c_err_load_trigger));
 	if (chip->i2c_err_load_trigger) {
+		oplus_chg_track_upload_trigger_data(*(chip->i2c_err_load_trigger));
 		kfree(chip->i2c_err_load_trigger);
 		chip->i2c_err_load_trigger = NULL;
 	}
@@ -326,24 +325,16 @@ static void sc8517_track_i2c_err_load_trigger_work(struct work_struct *work)
 static int sc8517_dump_reg_info(struct oplus_voocphy_manager *chip,
 				char *dump_info, int len)
 {
-	int ret;
-	u8 data[6] = {0};
 	int index = 0;
 
-	if(!chip || !dump_info)
+	if (!chip || !dump_info)
 		return 0;
 
-	ret = sc8517_read_i2c_block(chip->client, SC8517_REG_09, 6, data);
-	if (ret < 0) {
-		pr_err("read SC8517_REG_09 6 bytes failed\n");
-		return -EINVAL;
-	}
-
 	index += snprintf(&(dump_info[index]), len - index,
-			"REG_09~REG_0E:[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
-			data[0], data[1], data[2], data[3], data[4], data[5]);
-
-	return 0;
+			  "REG_09~REG_0E:[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+			  chip->int_column_pre[0], chip->int_column_pre[1], chip->int_column_pre[2],
+			  chip->int_column_pre[3], chip->int_column_pre[4], chip->int_column_pre[5]);
+	return index;
 }
 
 static int sc8517_track_upload_cp_err_info(struct oplus_voocphy_manager *chip,
@@ -435,11 +426,8 @@ static void sc8517_track_cp_err_load_trigger_work(
 			container_of(dwork, struct oplus_voocphy_manager,
 			cp_err_load_trigger_work);
 
-	if (!chip)
-		return;
-
-	oplus_chg_track_upload_trigger_data(*(chip->cp_err_load_trigger));
 	if (chip->cp_err_load_trigger) {
+		oplus_chg_track_upload_trigger_data(*(chip->cp_err_load_trigger));
 		kfree(chip->cp_err_load_trigger);
 		chip->cp_err_load_trigger = NULL;
 	}
@@ -648,7 +636,6 @@ static int sc8517_set_chg_enable(struct oplus_voocphy_manager *chip, bool enable
 	return ret;
 }
 
-
 static int sc8517_get_adc_enable(struct oplus_voocphy_manager *chip, u8 *data)
 {
 	int ret = 0;
@@ -781,6 +768,49 @@ static int sc8517_set_chg_auto_mode(struct oplus_voocphy_manager *chip, bool ena
 	return ret;
 }
 
+static u8 sc8517_get_pps_rvs_ocp_deglitch(struct oplus_voocphy_manager *chip)
+{
+	int ret = 0;
+	u8 value = 0;
+
+	if (!chip) {
+		chg_err("Failed\n");
+		return -1;
+	}
+	ret = sc8517_read_byte(chip->client, SC8517_REG_12, &value);
+	value = value & RVS_OCP_DG;
+
+	chg_err("----value = %d\n",value);
+	return value;
+}
+
+
+static int sc8517_set_pps_rvs_ocp_deglitch(struct oplus_voocphy_manager *chip, bool enable)
+{
+	int ret = 0;
+	if (!chip) {
+		chg_err("Failed\n");
+		return -1;
+	}
+
+	if(enable && (sc8517_get_pps_rvs_ocp_deglitch(chip) == NO_EXTRA_DEGLITCH))
+		ret = sc8517_update_bits(chip->client, SC8517_REG_12,RVS_OCP_DG,
+				EXTRA_10US_DEGLITCH << EXTRA_10US_DEGLITCH_SHIFT);
+	else if(!enable && (sc8517_get_pps_rvs_ocp_deglitch(chip) ==
+			(EXTRA_10US_DEGLITCH << EXTRA_10US_DEGLITCH_SHIFT)))
+		ret = sc8517_update_bits(chip->client, SC8517_REG_12,RVS_OCP_DG, NO_EXTRA_DEGLITCH);
+	else
+		ret = 0;
+	chg_err(",enable = %d\n",enable);
+
+	if (ret < 0) {
+		chg_err("SC8517_REG_12\n");
+		return -1;
+	}
+	return ret;
+}
+
+
 static void sc8517_set_pd_svooc_config(struct oplus_voocphy_manager *chip, bool enable)
 {
 	if (!chip) {
@@ -809,6 +839,18 @@ void sc8517_send_handshake(struct oplus_voocphy_manager *chip)
 	sc8517_write_byte(chip->client, SC8517_REG_24, 0x81);//enable voocphy and handshake
 }
 
+static void sc8517_set_fix_mode(bool val)
+{
+	if (!oplus_voocphy_mg) {
+		chg_err("Failed\n");
+		return;
+	} else {
+		if (val)
+			sc8517_write_byte(oplus_voocphy_mg->client, SC8517_REG_07, 0x46); //Enable Fixed-Frequency Mode
+		else
+			sc8517_write_byte(oplus_voocphy_mg->client, SC8517_REG_07, 0x06); //disable Fixed-Frequency Mode
+	}
+}
 
 static int sc8517_reset_voocphy(struct oplus_voocphy_manager *chip)
 {
@@ -841,7 +883,6 @@ static int sc8517_reset_voocphy(struct oplus_voocphy_manager *chip)
 	return VOOCPHY_SUCCESS;
 }
 
-
 static int sc8517_reactive_voocphy(struct oplus_voocphy_manager *chip)
 {
 	//set predata 0
@@ -863,6 +904,33 @@ static int sc8517_reactive_voocphy(struct oplus_voocphy_manager *chip)
 	chg_err ("oplus_vooc_reactive_voocphy done");
 
 	return VOOCPHY_SUCCESS;
+}
+
+static int sc8517_set_ufcs_enable(struct oplus_voocphy_manager *chip, bool enable)
+{
+	int ret = 0;
+	if (!chip) {
+		chg_err("Failed\n");
+		return -1;
+	}
+
+	sc8517_write_byte(chip->client, SC8517_REG_02, 0x7a);
+
+	if (enable) {
+        ret = sc8517_write_byte(chip->client, 0x7d, 0x40);
+		ret = sc8517_write_byte(chip->client, SC8517_REG_02, 0x7b);
+	}
+	else {
+        ret = sc8517_write_byte(chip->client, 0x7d, 0x00);
+		ret = sc8517_write_byte(chip->client, SC8517_REG_02, 0x78);
+	}
+	chg_err("set enable = %d\n",enable);
+
+	if (ret < 0) {
+		chg_err("SC8517_REG_02 fail\n");
+		return -1;
+	}
+	return ret;
 }
 
 static irqreturn_t sc8517_charger_interrupt(int irq, void *dev_id)
@@ -912,6 +980,7 @@ static int sc8517_hardware_init(struct oplus_voocphy_manager *chip)
 	sc8517_write_byte(chip->client, SC8517_REG_08, 0xA6);//REF_SKIP_R 40mv
 	sc8517_write_byte(chip->client, SC8517_REG_29, 0x05);//Masked Pulse_filtered, RX_Start,Tx_Done,soft intflag
 	sc8517_write_byte(chip->client, SC8517_REG_10, 0x79);//Masked Pulse_filtered, RX_Start,Tx_Done
+	sc8517_write_byte(chip->client, SC8517_REG_03, 0xFF); /* set rvs and fwd ocp */
 	return 0;
 }
 
@@ -1324,13 +1393,20 @@ static struct oplus_voocphy_operations oplus_sc8517_ops = {
 	.get_pd_svooc_config = sc8517_get_pd_svooc_config,
 	.get_vbus_status	 = sc8517_get_vbus_status,
 	.set_chg_auto_mode 	= sc8517_set_chg_auto_mode,
+	.set_pps_rvs_ocp 	= sc8517_set_pps_rvs_ocp_deglitch,
 	.get_voocphy_enable = sc8517_get_voocphy_enable,
 	.dump_voocphy_reg	= sc8517_dump_reg_in_err_issue,
 	.upload_cp_error	= sc8517_track_upload_cp_err_info,
+	.set_ufcs_enable     = sc8517_set_ufcs_enable,
+	.set_fix_mode		= sc8517_set_fix_mode,
 };
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0))
+static int sc8517_charger_probe(struct i2c_client *client)
+#else
 static int sc8517_charger_probe(struct i2c_client *client,
                                 const struct i2c_device_id *id)
+#endif
 {
 	struct oplus_voocphy_manager *chip;
 	int ret;
@@ -1382,6 +1458,7 @@ err_1:
 
 static void sc8517_charger_shutdown(struct i2c_client *client)
 {
+	sc8517_write_byte(client, SC8517_REG_02, 0x78);
 	sc8517_update_bits(client, SC8517_REG_06,SC8517_REG_RESET_MASK, SC8517_RESET_REG << SC8517_REG_RESET_SHIFT);
 	msleep(10);
 	sc8517_write_byte(client, SC8517_REG_01, 0x5e);//disable v1x_scp 
@@ -1443,6 +1520,9 @@ void sc8517_subsys_exit(void)
 {
 	i2c_del_driver(&sc8517_charger_driver);
 }
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+oplus_chg_module_register(sc8517_subsys);
+#endif
 #endif /*LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)*/
 
 //module_i2c_driver(sc8517_charger_driver);

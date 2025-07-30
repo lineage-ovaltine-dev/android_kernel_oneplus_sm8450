@@ -16,12 +16,18 @@ enum wired_topic_item {
 	WIRED_ITEM_USB_TEMP_VOLT_R,
 	WIRED_ITEM_USB_TEMP_L,
 	WIRED_ITEM_USB_TEMP_R,
+	WIRED_ITEM_PRE_OTG_ENABLE,
 	WIRED_ITEM_OTG_ENABLE,
 	WIRED_ITEM_CHARGER_CURR_MAX,
 	WIRED_ITEM_CHARGER_VOL_MAX,
 	WIRED_ITEM_CHARGER_VOL_MIN,
 	WIRED_TIME_ABNORMAL_ADAPTER,
 	WIRED_TIME_TYPEC_STATE,
+	WIRED_ITEM_REAL_CHG_TYPE,
+	WIRED_ITEM_VBUS,
+	WIRED_ITEM_ONLINE_STATUS_ERR,
+	WIRED_ITEM_CHARGING_DISABLE,
+	WIRED_ITEM_COEXISTENCE,
 };
 
 enum oplus_wired_cc_detect_status {
@@ -39,6 +45,7 @@ typedef enum {
 #define SMART_CHARGE_USER_USBTEMP	1
 #define SMART_CHARGE_USER_OTHER		0
 
+const char *oplus_wired_get_chg_type_str(enum oplus_chg_usb_type);
 int oplus_wired_get_charger_cycle(void);
 void oplus_wired_dump_regs(void);
 int oplus_wired_get_vbus(void);
@@ -54,6 +61,7 @@ int oplus_wired_output_enable(bool enable);
 bool oplus_wired_output_is_enable(void);
 int oplus_wired_get_icl(void);
 int oplus_wired_set_fv(int fv_mv);
+int oplus_wired_get_fv(int *fv_mv);
 int oplus_wired_set_iterm(int iterm_ma);
 int oplus_wired_set_rechg_vol(int vol_mv);
 int oplus_wired_get_ibus(void);
@@ -64,11 +72,14 @@ int oplus_wired_set_otg_boost_curr_limit(int curr_ma);
 int oplus_wired_aicl_enable(bool enable);
 int oplus_wired_aicl_rerun(void);
 int oplus_wired_aicl_reset(void);
+int oplus_wired_set_aicl_point(void);
 int oplus_wired_get_cc_orientation(void);
 int oplus_wired_get_hw_detect(void);
+int oplus_wired_get_hw_detect_recheck(void);
 int oplus_wired_rerun_bc12(void);
 int oplus_wired_qc_detect_enable(bool enable);
 int oplus_wired_shipmode_enable(bool enable);
+bool oplus_wired_shipmode_is_enabled(void);
 int oplus_wired_set_qc_config(enum oplus_chg_qc_version version, int vol_mv);
 int oplus_wired_set_pd_config(u32 pdo);
 int oplus_wired_get_usb_temp_volt(int *vol_l, int *vol_r);
@@ -88,4 +99,7 @@ int oplus_wired_get_otg_online_status(struct oplus_mms *topic);
 void oplus_wired_check_bcc_curr_done(struct oplus_mms *topic);
 int oplus_wired_get_bcc_curr_done_status(struct oplus_mms *topic);
 void oplus_wired_set_bcc_curr_request(struct oplus_mms *topic);
+int oplus_wired_get_byb_id_info(struct oplus_mms *topic);
+int oplus_wired_get_byb_id_match_info(struct oplus_mms *topic);
+
 #endif /* __OPLUS_MMS_WIRED_H__ */
