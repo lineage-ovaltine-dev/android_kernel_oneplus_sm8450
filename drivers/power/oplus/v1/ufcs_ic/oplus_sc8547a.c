@@ -1449,17 +1449,6 @@ static void sc8547_set_switch_fast_charger(struct oplus_voocphy_manager *chip)
 		return;
 	}
 
-	if (chip->switch1_gpio < 0) {
-		chg_err("miss sc8547_set_switch_normal_charger gpio\n");
-		return;
-	}
-
-	if (IS_ERR_OR_NULL(chip->pinctrl) ||
-	    IS_ERR_OR_NULL(chip->charger_gpio_sw_ctrl2_high)) {
-		chg_err("%s pinctrl or active or sleep null!\n", __func__);
-		return;
-	}
-
 	pinctrl_select_state(chip->pinctrl, chip->charger_gpio_sw_ctrl2_high);
 	gpio_direction_output(chip->switch1_gpio, 1); /* out 1*/
 
@@ -1473,17 +1462,6 @@ static void sc8547_set_switch_normal_charger(struct oplus_voocphy_manager *chip)
 {
 	if (!chip) {
 		pr_err("sc8547_set_switch_normal_charger chip null\n");
-		return;
-	}
-
-	if (chip->switch1_gpio < 0) {
-		chg_err("miss sc8547_set_switch_normal_charger gpio\n");
-		return;
-	}
-
-	if (IS_ERR_OR_NULL(chip->pinctrl) ||
-	    IS_ERR_OR_NULL(chip->charger_gpio_sw_ctrl2_low)) {
-		chg_err("%s pinctrl or active or sleep null!\n", __func__);
 		return;
 	}
 

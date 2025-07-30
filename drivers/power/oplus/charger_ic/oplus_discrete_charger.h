@@ -16,7 +16,14 @@ enum {
 	SY6970,
 	SY6974B,
 	SGM41511,
-	SGM41512
+	SGM41512,
+	SC6607
+};
+
+struct oplus_discrete_charger {
+	bool sc6607_switch_ntc;
+	bool support_chan_usbbtb;
+	bool support_chan_batbtb;
 };
 
 extern void set_charger_ic(int sel);

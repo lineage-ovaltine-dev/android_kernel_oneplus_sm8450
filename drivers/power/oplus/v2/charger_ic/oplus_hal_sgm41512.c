@@ -822,7 +822,7 @@ static int sgm41512_disable_vbus(struct oplus_chg_ic_dev *ic_dev, bool en,
 }
 
 static void sgm41512_wired_subs_callback(struct mms_subscribe *subs,
-					 enum mms_msg_type type, u32 id)
+					 enum mms_msg_type type, u32 id, bool sync)
 {
 	struct sgm41512_chip *chip = subs->priv_data;
 
@@ -1086,12 +1086,13 @@ static int sgm41512_driver_probe(struct i2c_client *client,
 	}
 	ic_cfg.name = node->name;
 	ic_cfg.index = ic_index;
-	sprintf(ic_cfg.manu_name, "BC1.2-SGM41512");
-	sprintf(ic_cfg.fw_id, "0x00");
+	snprintf(ic_cfg.manu_name, OPLUS_CHG_IC_MANU_NAME_MAX - 1, "buck-SGM41512");
+	snprintf(ic_cfg.fw_id, OPLUS_CHG_IC_FW_ID_MAX - 1, "0x00");
 	ic_cfg.type = ic_type;
 	ic_cfg.get_func = oplus_chg_get_func;
 	ic_cfg.virq_data = sgm41512_virq_table;
 	ic_cfg.virq_num = ARRAY_SIZE(sgm41512_virq_table);
+	ic_cfg.of_node = node;
 	chip->ic_dev =
 		devm_oplus_chg_ic_register(chip->dev, &ic_cfg);
 	if (!chip->ic_dev) {
