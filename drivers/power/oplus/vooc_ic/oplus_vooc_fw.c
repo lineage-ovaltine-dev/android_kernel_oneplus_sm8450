@@ -16,6 +16,7 @@
 #include <linux/workqueue.h>
 #include <linux/kobject.h>
 #include <linux/platform_device.h>
+#include <linux/pinctrl/consumer.h>
 #include <asm/atomic.h>
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
 #include <linux/xlog.h>
@@ -480,6 +481,8 @@ void oplus_vooc_fw_type_dt(struct oplus_vooc_chip *chip)
 			chg_err("vooc_current_lvl[%d]\n", chip->vooc_current_lvl[loop]);
 		}
 	}
+	of_property_read_u32(node, "oplus,vooc_1time_full_volt", &chip->vooc_1time_full_volt);
+	of_property_read_u32(node, "oplus,vooc_ntime_full_volt", &chip->vooc_ntime_full_volt);
 	chip->batt_type_4400mv = of_property_read_bool(node, "qcom,oplus_batt_4400mv");
 	chip->support_vooc_by_normal_charger_path = of_property_read_bool(node,
 		"qcom,support_vooc_by_normal_charger_path");

@@ -204,6 +204,9 @@ extern void oplus_set_hvdcp_flag_clear(void);
 struct oplus_chg_operations  mtk6375_chg_ops;
 static int oplus_mt6375_check_charging_enable(void);
 static int oplus_mt6375_disable_charging(void);
+static int ntc_temp_dbg = 0;
+module_param(ntc_temp_dbg, int, 0644);
+MODULE_PARM_DESC(ntc_temp_dbg, "ntc temp debug");
 
 #if 0
 static void oplus_set_usb_status(int status)
@@ -434,7 +437,11 @@ int get_battery_current(struct mtk_charger *info)
 
 static int get_pmic_vbus(struct mtk_charger *info, int *vchr)
 {
+#ifndef OPLUS_FEATURE_CHG_BASIC
 	union power_supply_propval prop;
+#else
+	union power_supply_propval prop = { 0 };
+#endif
 	static struct power_supply *chg_psy;
 	int ret;
 
@@ -560,7 +567,13 @@ bool is_charger_exist(struct mtk_charger *info)
 
 int get_charger_type(struct mtk_charger *info)
 {
+#ifndef OPLUS_FEATURE_CHG_BASIC
 	union power_supply_propval prop, prop2, prop3;
+#else
+	union power_supply_propval prop = { 0 };
+	union power_supply_propval prop2 = { 0 };
+	union power_supply_propval prop3 = { 0 };
+#endif
 	static struct power_supply *chg_psy;
 	int ret;
 
@@ -600,7 +613,12 @@ int get_charger_type(struct mtk_charger *info)
 
 int get_usb_type(struct mtk_charger *info)
 {
+#ifndef OPLUS_FEATURE_CHG_BASIC
 	union power_supply_propval prop, prop2;
+#else
+	union power_supply_propval prop = { 0 };
+	union power_supply_propval prop2 = { 0 };
+#endif
 	static struct power_supply *chg_psy;
 	int ret;
 
@@ -2354,12 +2372,19 @@ static ssize_t enable_sc_store(
 	if (buf != NULL && size != 0) {
 		chr_err("[enable smartcharging] buf is %s\n", buf);
 		ret = kstrtoul(buf, 10, &val);
+#ifdef OPLUS_FEATURE_CHG_BASIC
+		if (ret < 0) {
+			chr_err("[enable smartcharging] ret is %d ??\n", ret);
+			val = 0;
+		}
+#else
 		if (val < 0) {
 			chr_err(
 				"[enable smartcharging] val is %d ??\n",
 				(int)val);
 			val = 0;
 		}
+#endif
 
 		if (val == 0)
 			info->sc.enable = false;
@@ -2418,15 +2443,14 @@ static ssize_t sc_stime_store(
 	if (buf != NULL && size != 0) {
 		chr_err("[smartcharging stime] buf is %s\n", buf);
 		ret = kstrtoul(buf, 10, &val);
-		if (val < 0) {
+		if (ret < 0) {
 			chr_err(
 				"[smartcharging stime] val is %d ??\n",
 				(int)val);
 			val = 0;
 		}
 
-		if (val >= 0)
-			info->sc.start_time = val;
+		info->sc.start_time = val;
 
 		chr_err(
 			"[smartcharging stime]enable smartcharging=%d\n",
@@ -2480,15 +2504,14 @@ static ssize_t sc_etime_store(
 	if (buf != NULL && size != 0) {
 		chr_err("[smartcharging etime] buf is %s\n", buf);
 		ret = kstrtoul(buf, 10, &val);
-		if (val < 0) {
+		if (ret < 0) {
 			chr_err(
 				"[smartcharging etime] val is %d ??\n",
 				(int)val);
 			val = 0;
 		}
 
-		if (val >= 0)
-			info->sc.end_time = val;
+		info->sc.end_time = val;
 
 		chr_err(
 			"[smartcharging stime]enable smartcharging=%d\n",
@@ -2542,14 +2565,23 @@ static ssize_t sc_tuisoc_store(
 	if (buf != NULL && size != 0) {
 		chr_err("[smartcharging tuisoc] buf is %s\n", buf);
 		ret = kstrtoul(buf, 10, &val);
+#ifdef OPLUS_FEATURE_CHG_BASIC
+		if (ret < 0) {
+			chr_err("[smartcharging tuisoc] ret is %d ??\n", ret);
+			val = 0;
+		}
+#else
 		if (val < 0) {
 			chr_err(
 				"[smartcharging tuisoc] val is %d ??\n",
 				(int)val);
 			val = 0;
 		}
+#endif
 
+#ifndef OPLUS_FEATURE_CHG_BASIC
 		if (val >= 0)
+#endif
 			info->sc.target_percentage = val;
 
 		chr_err(
@@ -2604,14 +2636,23 @@ static ssize_t sc_ibat_limit_store(
 	if (buf != NULL && size != 0) {
 		chr_err("[smartcharging ibat limit] buf is %s\n", buf);
 		ret = kstrtoul(buf, 10, &val);
+#ifdef OPLUS_FEATURE_CHG_BASIC
+		if (ret < 0) {
+			chr_err("[smartcharging ibat limit] ret is %d ??\n", ret);
+			val = 0;
+		}
+#else
 		if (val < 0) {
 			chr_err(
 				"[smartcharging ibat limit] val is %d ??\n",
 				(int)val);
 			val = 0;
 		}
+#endif
 
+#ifndef OPLUS_FEATURE_CHG_BASIC
 		if (val >= 0)
+#endif
 			info->sc.current_limit = val;
 
 		chr_err(
@@ -3816,7 +3857,12 @@ int psy_charger_set_property(struct power_supply *psy,
 static void mtk_charger_external_power_changed(struct power_supply *psy)
 {
 	struct mtk_charger *info;
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	union power_supply_propval prop = { 0 };
+	union power_supply_propval prop2 = { 0 };
+#else
 	union power_supply_propval prop, prop2;
+#endif
 	struct power_supply *chg_psy = NULL;
 #ifdef OPLUS_FEATURE_CHG_BASIC
 	union oplus_chg_mod_propval temp_val = {0, };
@@ -4000,6 +4046,10 @@ int notify_adapter_event(struct notifier_block *notifier,
 			pinfo->notify_code &= ~CHG_TYPEC_WD_STATUS;
 		mtk_chgstat_notify(pinfo);
 		break;
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	default:
+		break;
+#endif
 	}
 	return NOTIFY_DONE;
 }
@@ -4325,7 +4375,8 @@ static int pd_tcp_notifier_call(struct notifier_block *pnb,
 		}
 		pr_err("pd_wait_hard_reset_complete: %d\n", pinfo->wait_hard_reset_complete);
 		break;
-
+	default:
+		break;
 	}
 	return ret;
 }
@@ -4976,10 +5027,16 @@ static __s16 oplus_ts_ch_volt_to_temp(__u32 dwvolt)
 	return chg_tmp;
 }
 
+#define OPLUS_CHARGER_IC_DEFAULT 250
 int oplus_get_chargeric_temp(void)
 {
 	int val = 0;
 	int ret = 0, output;
+
+	if (!pinfo) {
+		chg_err("pinfo is null, set charger_ic temp as default 25C!\n");
+		return OPLUS_CHARGER_IC_DEFAULT;
+	}
 
 	if (pinfo && pinfo->chargeric_temp_chan) {
 		ret = iio_read_channel_processed(pinfo->chargeric_temp_chan, &val);
@@ -5302,9 +5359,26 @@ static int oplus_get_ntc_temp(struct iio_channel *ntc_temp_chan, struct ntc_temp
 	return chargeric_temp;
 }
 
+#define OPEN_NTC_TEMP (-200)
+#define TRACK_LOCAL_T_NS_TO_S_THD 1000000000
+#define TRACK_DEVICE_ABNORMAL_UPLOAD_PERIOD (24 * 3600)
+static int oplus_chg_track_get_local_time_s(void)
+{
+	int local_time_s;
+
+	local_time_s = local_clock() / TRACK_LOCAL_T_NS_TO_S_THD;
+	pr_debug("local_time_s:%d\n", local_time_s);
+
+	return local_time_s;
+}
+
 static int oplus_chg_get_main_battery_btb(void)
 {
 	int temp = DEFUALT_TEMP;
+	int curr_time;
+	static int pre_upload_time = 0;
+	static int upload_count = 0;
+	int ret = 0;
 
 	if (!pinfo || !g_oplus_chip) {
 		chg_err("pinfo is NULL\n");
@@ -5321,6 +5395,21 @@ static int oplus_chg_get_main_battery_btb(void)
 
 	if (!IS_ERR_OR_NULL(pinfo->batcon_temp_chan)) {
 		temp = oplus_get_ntc_temp(pinfo->batcon_temp_chan, pinfo->batt_ntc_param);
+		if (ntc_temp_dbg != 0)
+			temp = ntc_temp_dbg;
+		if (temp < OPEN_NTC_TEMP) {
+			curr_time = oplus_chg_track_get_local_time_s();
+			if (curr_time - pre_upload_time > TRACK_DEVICE_ABNORMAL_UPLOAD_PERIOD)
+				upload_count = 0;
+			if (upload_count == 0) {
+				ret = oplus_track_upload_ntc_abnormal_info(temp,
+					"batcon_temp", "temp_err", "too_low", NULL);
+				if (ret == 0) {
+					pre_upload_time = curr_time;
+					upload_count++;
+				}
+			}
+		}
 		return temp;
 	}
 
@@ -6671,9 +6760,6 @@ static int battery_get_property(struct power_supply *psy,
 			if (g_oplus_chip) {
 				val->intval = g_oplus_chip->batt_fcc * 1000;
 			}
-			break;
-		case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW:
-			val->intval = 0;
 			break;
 		default:
 			rc = oplus_battery_get_property(psy, psp, val);

@@ -92,6 +92,8 @@
 #define WLS_FW_BUF_SIZE			128
 #define DEFAULT_RESTRICT_FCC_UA		1000000
 
+#define BATTMNGR_EFAILED		512 /*Error: i2c Operation Failed*/
+
 #ifdef OPLUS_FEATURE_CHG_BASIC
 struct oem_read_buffer_req_msg {
     struct pmic_glink_hdr hdr;
@@ -182,6 +184,7 @@ enum battery_property_id {
 	BATT_ZY0603_CHECK_RC_SFR,
 	BATT_ZY0603_SOFT_RESET,
 	BATT_AFI_UPDATE_DONE,
+	BATT_ZY0603_RESET_FG_BALANCE,
 	BATT_PROP_MAX,
 };
 
@@ -356,6 +359,7 @@ struct psy_state {
 struct oplus_custom_gpio_pinctrl {
 	int vchg_trig_gpio;
 	int ccdetect_gpio;
+	int mcu_en_gpio;
 	struct mutex pinctrl_mutex;
 	struct pinctrl *vchg_trig_pinctrl;
 	struct pinctrl_state *vchg_trig_default;
@@ -366,6 +370,9 @@ struct oplus_custom_gpio_pinctrl {
 	struct pinctrl_state	*usbtemp_l_gpio_default;
 	struct pinctrl			*usbtemp_r_gpio_pinctrl;
 	struct pinctrl_state	*usbtemp_r_gpio_default;
+	struct pinctrl			*mcu_en_pinctrl;
+	struct pinctrl_state *mcu_en_active;
+	struct pinctrl_state *mcu_en_sleep;
 };
 #endif
 
@@ -417,6 +424,8 @@ struct battery_chg_dev {
 	struct delayed_work	unsuspend_usb_work;
 	struct delayed_work	reset_turn_on_chg_work;
 	struct delayed_work	get_real_chg_type_work;
+	struct delayed_work	plugin_irq_work;
+	struct delayed_work	update_input_current_work;
 	u32			oem_misc_ctl_data;
 	bool			oem_usb_online;
 	struct delayed_work	adsp_voocphy_err_work;
@@ -440,10 +449,12 @@ struct battery_chg_dev {
 #endif
 #ifdef OPLUS_FEATURE_CHG_BASIC
 	int vchg_trig_irq;
+	struct delayed_work mcu_en_init_work;
 	struct delayed_work vchg_trig_work;
 	struct delayed_work wait_wired_charge_on;
 	struct delayed_work wait_wired_charge_off;
 	bool wls_fw_update;
+	struct delayed_work	reset_fg_balance_work;
 #endif /*OPLUS_FEATURE_CHG_BASIC*/
 	int				fake_soc;
 	bool				block_tx;

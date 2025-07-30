@@ -211,6 +211,18 @@ static int oplus_chg_wls_charger_vol(struct oplus_chg_comm *comm_dev, int *vchg_
 	return 0;
 }
 
+static int oplus_chg_get_dec_cv(void)
+{
+	int dec_cv = 0;
+	if (!g_oplus_chip || !g_oplus_chip->dec_cv.spec_dec_cv_mv) {
+		pr_err("g_oplus_chip is null\n");
+		return dec_cv;
+	}
+	dec_cv = g_oplus_chip->dec_cv.dec_vol;
+
+	return dec_cv;
+}
+
 static int oplus_chg_get_batt_temp(struct oplus_chg_comm *comm_dev)
 {
 	if (!g_oplus_chip) {
@@ -526,7 +538,7 @@ static int oplus_chg_comm_event_notifier_call(struct notifier_block *nb, unsigne
 	switch (val) {
 	case OPLUS_CHG_EVENT_ONLINE:
 		if (owner_ocm == NULL) {
-			pr_err("This event(=%d) does not support anonymous sending\n", val);
+			pr_err("This event(=%lu) does not support anonymous sending\n", val);
 			return NOTIFY_BAD;
 		}
 		if (!strcmp(owner_ocm->desc->name, "wireless")) {
@@ -539,7 +551,7 @@ static int oplus_chg_comm_event_notifier_call(struct notifier_block *nb, unsigne
 		break;
 	case OPLUS_CHG_EVENT_OFFLINE:
 		if (owner_ocm == NULL) {
-			pr_err("This event(=%d) does not support anonymous sending\n", val);
+			pr_err("This event(=%lu) does not support anonymous sending\n", val);
 			return NOTIFY_BAD;
 		}
 		if (!strcmp(owner_ocm->desc->name, "wireless")) {
@@ -1044,10 +1056,11 @@ static int oplus_chg_comm_check_batt_temp(struct oplus_chg_comm *comm_dev)
 
 	if (comm_dev->is_power_changed) {
 		comm_dev->is_power_changed = false;
-		pr_info("charge status changed, temp region is %d\n", comm_dev->temp_region);
+		pr_info("charge status changed, temp region is [%d %d %d]\n", comm_dev->temp_region,
+			comm_cfg->vbatmax_mv[temp_region], oplus_chg_get_dec_cv());
 		if (is_wls_fv_votable_available(comm_dev))
-			oplus_vote(comm_dev->wls_fv_votable, USER_VOTER, true, comm_cfg->vbatmax_mv[temp_region],
-				   false);
+			oplus_vote(comm_dev->wls_fv_votable, USER_VOTER, true,
+				(comm_cfg->vbatmax_mv[temp_region] - oplus_chg_get_dec_cv()), false);
 		if (is_wls_ocm_available(comm_dev))
 			oplus_chg_anon_mod_event(comm_dev->wls_ocm, OPLUS_CHG_EVENT_POWER_CHANGED);
 	}
@@ -1250,7 +1263,7 @@ int oplus_chg_comm_check_ffc(struct oplus_chg_mod *comm_ocm)
 			rc = -EINVAL;
 			goto err;
 		} else if (wls_online) {
-			fv_max_mv = comm_cfg->wls_ffc_fv_cutoff_mv[comm_dev->ffc_step];
+			fv_max_mv = comm_cfg->wls_ffc_fv_cutoff_mv[comm_dev->ffc_step] - oplus_chg_get_dec_cv();
 			cutoff_ma = comm_cfg->wls_ffc_fcc_cutoff_ma[comm_dev->ffc_step][ffc_temp_region - 1];
 			step_max = comm_cfg->wls_ffc_step_max;
 		} else {
@@ -1295,8 +1308,8 @@ int oplus_chg_comm_check_ffc(struct oplus_chg_mod *comm_ocm)
 			comm_dev->ffc_fv_count = 0;
 			comm_dev->ffc_status = FFC_IDLE;
 			temp_region = oplus_chg_comm_get_temp_region(comm_ocm);
-			oplus_vote(comm_dev->wls_fv_votable, USER_VOTER, true, comm_cfg->vbatmax_mv[temp_region],
-				   false);
+			oplus_vote(comm_dev->wls_fv_votable, USER_VOTER, true,
+				(comm_cfg->vbatmax_mv[temp_region] - oplus_chg_get_dec_cv()), false);
 		} else {
 			if (usb_online) {
 				pr_err("not support usb ffc\n");
@@ -1321,7 +1334,7 @@ int oplus_chg_comm_check_ffc(struct oplus_chg_mod *comm_ocm)
 				oplus_vote(comm_dev->wls_icl_votable, USER_VOTER, true,
 					   comm_cfg->wls_ffc_icl_ma[comm_dev->ffc_step][ffc_temp_region - 1], true);
 				oplus_vote(comm_dev->wls_fv_votable, USER_VOTER, true,
-					   comm_cfg->wls_ffc_fv_mv[comm_dev->ffc_step], false);
+					   (comm_cfg->wls_ffc_fv_mv[comm_dev->ffc_step] - oplus_chg_get_dec_cv()), false);
 				oplus_vote(comm_dev->wls_fcc_votable, USER_VOTER, true,
 					   comm_cfg->wls_ffc_fcc_ma[comm_dev->ffc_step][ffc_temp_region - 1], false);
 			}
@@ -1440,7 +1453,7 @@ bool oplus_chg_comm_check_batt_full_by_sw(struct oplus_chg_mod *comm_ocm)
 	}
 
 	/* use SW Vfloat to check */
-	if (batt_volt > vbatt_full_vol_sw) {
+	if (batt_volt > (vbatt_full_vol_sw - oplus_chg_get_dec_cv())) {
 		if (icharging < 0 && abs(icharging) <= term_current) {
 			vbat_counts_sw++;
 			if (vbat_counts_sw > FULL_COUNTS_SW * comm_cfg->full_count_sw_num) {
@@ -1464,7 +1477,7 @@ bool oplus_chg_comm_check_batt_full_by_sw(struct oplus_chg_mod *comm_ocm)
 	}
 
 	/* use HW Vfloat to check */
-	if (batt_volt >= vbatt_full_vol_hw + 18) {
+	if (batt_volt >= (vbatt_full_vol_hw + 18 - oplus_chg_get_dec_cv())) {
 		vbat_counts_hw++;
 		if (vbat_counts_hw >= FULL_COUNTS_HW) {
 			vbat_counts_hw = 0;
@@ -1872,7 +1885,7 @@ static void oplus_chg_heartbeat_work(struct work_struct *work)
 	temp_region = oplus_chg_comm_get_temp_region(comm_dev->comm_ocm);
 	(void)oplus_chg_get_vbat(comm_dev, &vbat_mv);
 
-	vbatdet_mv = comm_cfg->wls_vbatdet_mv[temp_region];
+	vbatdet_mv = comm_cfg->wls_vbatdet_mv[temp_region] - oplus_chg_get_dec_cv();
 	if (temp_region <= BATT_TEMP_UNKNOWN || temp_region >= BATT_TEMP_HOT)
 		vbatdet_mv = 0;
 	if (!comm_dev->chg_ovp && comm_dev->chg_done && !comm_dev->recharge_pending &&
@@ -2138,6 +2151,8 @@ lcd_notif_reg_err:
 	oplus_chg_mod_unregister(comm_dev->comm_ocm);
 #endif
 comm_mod_init_err:
+	if (!IS_ERR_OR_NULL(comm_dev->skin_therm_chan))
+		iio_channel_release(comm_dev->skin_therm_chan);
 parse_dt_err:
 	devm_kfree(&pdev->dev, comm_dev);
 	return rc;
@@ -2154,6 +2169,8 @@ static int oplus_chg_comm_driver_remove(struct platform_device *pdev)
 	oplus_chg_unreg_event_notifier(&comm_dev->comm_event_nb);
 	oplus_chg_unreg_mod_notifier(comm_dev->comm_ocm, &comm_dev->comm_mod_nb);
 	oplus_chg_mod_unregister(comm_dev->comm_ocm);
+	if (!IS_ERR_OR_NULL(comm_dev->skin_therm_chan))
+		iio_channel_release(comm_dev->skin_therm_chan);
 	devm_kfree(&pdev->dev, comm_dev);
 	return 0;
 }

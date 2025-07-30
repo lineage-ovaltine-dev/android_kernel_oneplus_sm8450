@@ -10,12 +10,20 @@
 #include <linux/power_supply.h>
 #include "oplus_chg_symbol.h"
 
+#define OPLUS_BATTINFO_DATE_SIZE 11
+#define OPLUS_BATT_SERIAL_NUM_SIZE 20
+struct bat_manufacture_info {
+	char bat_serial_num[OPLUS_BATT_SERIAL_NUM_SIZE];
+	char bat_debug_serial_num[OPLUS_BATT_SERIAL_NUM_SIZE];
+};
+
 struct oplus_gauge_chip {
 	struct i2c_client *client;
 	struct device *dev;
 	struct oplus_gauge_operations *gauge_ops;
 	struct power_supply *batt_psy;
 	int device_type;
+	u8 *device_name;
 	int device_type_for_vooc;
 	int capacity_pct;
 };
@@ -100,6 +108,29 @@ struct oplus_gauge_operations {
 	bool (*set_gauge_power_sel)(int sel);
 	bool (*check_rc_sfr)(void);
 	int (*soft_reset_rc_sfr)(void);
+	int (*get_gauge_info)(u8 *info, int len);
+	int (*get_batt_qmax)(int *qmax1, int *qmax2);
+	int (*get_batt_fcc)(int *fcc1, int *fcc2);
+	int (*get_batt_cc)(int *cc1, int *cc2);
+	int (*get_batt_soh)(int *soh1, int *soh2);
+	int (*get_calib_time)(int *dod_calib_time, int *qmax_calib_time, int gauge_index);
+	void (*cal_model_check)(bool ffc_state);
+	bool (*get_bqfs_status)(void);
+	int (*bqfs_fw_check)(void);
+	int (*bqfs_data_check)(void);
+	int (*get_batt_manu_date)(char *info, int len);
+	int (*get_batt_first_usage_date)(char *info, int len);
+	int (*set_batt_first_usage_date)(const char *info);
+	int (*get_seal_flag)(void);
+	int (*set_seal_flag)(int seal_flag);
+	int (*get_batt_ui_cc)(void);
+	int (*set_batt_ui_cc)(int ui_cc);
+	int (*get_batt_ui_soh)(void);
+	int (*set_batt_ui_soh)(int ui_soh);
+	int (*get_batt_used_flag)(void);
+	int (*set_batt_used_flag)(int used_flag);
+	int (*get_battinfo_sn)(char buf[], int len);
+	int (*get_gauge_car_c)(int *car_c);
 };
 
 /****************************************
@@ -174,6 +205,7 @@ int oplus_gauge_get_passedchg(int *val);
 void oplus_gauge_set_float_uv_ma(int iterm_ma, int float_volt_uv);
 int oplus_gauge_dump_register(void);
 int oplus_gauge_get_sub_batt_mvolts(void);
+int oplus_gauge_get_sub_prev_batt_mvolts(void);
 int oplus_gauge_get_sub_batt_current(void);
 int oplus_gauge_get_main_batt_soc(void);
 int oplus_gauge_get_sub_batt_soc(void);
@@ -192,6 +224,30 @@ int oplus_gauge_get_prev_bcc_parameters(char *buf);
 int oplus_gauge_set_bcc_parameters(const char *buf);
 bool oplus_gauge_check_rc_sfr(void);
 int oplus_gauge_soft_reset_rc_sfr(void);
+void oplus_gauge_get_device_name(u8 *name, int len);
+bool oplus_gauge_get_bqfs_status(void);
+int oplus_gauge_get_info(u8 *info, int len);
+int oplus_sub_gauge_get_info(u8 *info, int len);
+int oplus_gauge_get_qmax_v1(int *qmax1, int *qmax2);
+int oplus_gauge_get_fcc(int *fcc1, int *fcc2);
+int oplus_gauge_get_cc(int *cc1, int *cc2);
+int oplus_gauge_get_soh(int *soh1, int *soh2);
+int oplus_gauge_get_calib_time(int *dod_calib_time, int *qmax_calib_time, int gauge_index);
+void oplus_gauge_cal_model_check(bool ffc_state);
+int oplus_gauge_check_bqfs_fw(void);
+int oplus_gauge_bqfs_data_check(void);
+int oplus_gauge_get_bat_info_manu_date(char *info, int len);
+int oplus_gauge_get_bat_info_first_usage_date(char *info, int len);
+int oplus_gauge_set_bat_info_first_usage_date(const char *info);
+int oplus_pack_gauge_get_seal_flag(void);
+int oplus_pack_gauge_set_seal_flag(int seal_flag);
+int oplus_gauge_get_battinfo_ui_cc(void);
+int oplus_gauge_set_battinfo_ui_cc(int ui_cc);
+int oplus_gauge_get_battinfo_ui_soh(void);
+int oplus_gauge_set_battinfo_ui_soh(int ui_soh);
+int oplus_gauge_get_battinfo_used_flag(void);
+int oplus_gauge_set_battinfo_used_flag(int used_flag);
+int oplus_gauge_get_bat_info_sn(char *sn_buff, int size_buffer);
 
 #if defined(CONFIG_OPLUS_CHARGER_MTK6763) ||                                   \
 	defined(CONFIG_OPLUS_CHARGER_MTK6771)

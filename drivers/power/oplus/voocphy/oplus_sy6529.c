@@ -19,6 +19,7 @@
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
 #include <linux/err.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/machine.h>
@@ -223,6 +224,7 @@ static void sy6529_update_chg_data(struct oplus_voocphy_manager *chip)
 	u8 data_flag = 0;
 	u8 data_tmp = 0;
 	u8 value = 0;
+	s32 rc = 0;
 
 	/*int_flag
 	Reg0x0D:
@@ -264,7 +266,9 @@ static void sy6529_update_chg_data(struct oplus_voocphy_manager *chip)
 	   Reg18-Reg19:IBAT_ADC
 	   Reg1A:TDIE_ADC
 	 */
-	i2c_smbus_read_i2c_block_data(chip->client, sy6529_REG_12, UPDATE_DATA_BLOCK_LENGTH, data_block);
+	rc = i2c_smbus_read_i2c_block_data(chip->client, sy6529_REG_12, UPDATE_DATA_BLOCK_LENGTH, data_block);
+	if (rc < 0)
+		pr_err("sy6529_update_chg_data block read error\n");
 	for (i = 0; i < UPDATE_DATA_BLOCK_LENGTH; i++) {
 		pr_info("data_block[%d] = %u\n", i, data_block[i]);
 	}
@@ -326,9 +330,11 @@ static int sy6529_set_chg_enable(struct oplus_voocphy_manager *chip, bool enable
 static int sy6529_get_cp_vbat(struct oplus_voocphy_manager *chip)
 {
 	u8 data_block[2] = {0};
+	s32 rc = 0;
 
-	i2c_smbus_read_i2c_block_data(chip->client, sy6529_REG_16, 2, data_block);
-
+	rc = i2c_smbus_read_i2c_block_data(chip->client, sy6529_REG_16, 2, data_block);
+	if (rc < 0)
+		pr_err("sy6529_get_cp_vbat block read error\n");
 	chip->cp_vbat = ((data_block[0] << CHAR_BITS) | data_block[1]) * IBUS_VBAT_LSB;		/* SY6529's VBAT adc:reg16,17 LSB=0.15625mV*/
 	pr_info("cp_vbat = %d\n", chip->cp_vbat);
 	return chip->cp_vbat;
@@ -368,13 +374,16 @@ static int sy6529_get_cp_ichg(struct oplus_voocphy_manager *chip)
 	u8 data_block[2] = {0};
 	int cp_ichg = 0;
 	u8 cp_enable = 0;
+	s32 rc = 0;
 
 	sy6529_direct_chg_enable(chip, &cp_enable);
 
 	if (cp_enable == 0)
 		return 0;
 	/*parse data_block for improving time of interrupt*/
-	i2c_smbus_read_i2c_block_data(chip->client, sy6529_REG_14, 2, data_block);
+	rc = i2c_smbus_read_i2c_block_data(chip->client, sy6529_REG_14, 2, data_block);
+	if (rc < 0)
+		pr_err("sy6529_get_cp_ichg block read error\n");
 	chip->cp_ichg = ((data_block[0] << CHAR_BITS) | data_block[1]) * IBUS_VBAT_LSB;			/* SY6529's ibus adc:reg14,15 LSB=0.15625mA*/
 	pr_info("cp_ichg = %d\n", chip->cp_ichg);
 	return cp_ichg;
@@ -1114,8 +1123,12 @@ static int sy6529_charger_choose(struct oplus_voocphy_manager *chip)
 	}
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0))
+static int sy6529_charger_probe(struct i2c_client *client)
+#else
 static int sy6529_charger_probe(struct i2c_client *client,
 					const struct i2c_device_id *id)
+#endif
 {
 	struct oplus_voocphy_manager *chip;
 	int ret;
