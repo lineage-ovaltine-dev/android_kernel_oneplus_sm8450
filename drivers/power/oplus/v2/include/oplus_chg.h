@@ -2,7 +2,7 @@
 #define __OPLUS_CHG_CORE_H__
 
 #include <linux/version.h>
-#include <oplus_chg_symbol.h>
+#include "oplus_chg_symbol.h"
 
 extern int oplus_log_level;
 
@@ -45,7 +45,7 @@ enum {
 
 #define true_or_false_str(condition) (condition ? "true" : "false")
 
-#ifdef CONFIG_OPLUS_CHARGER_MTK
+#if (defined(CONFIG_OPLUS_CHARGER_MTK) || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
 #include <uapi/linux/rtc.h>
 
@@ -139,7 +139,7 @@ static inline struct timespec current_kernel_time(void)
 	return timespec64_to_timespec(ts64);
 }
 #endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)) */
-#endif /* CONFIG_OPLUS_CHARGER_MTK */
+#endif /* defined(CONFIG_OPLUS_CHARGER_MTK) || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0) */
 
 #define PD_SRC_PDO_TYPE(pdo)		(((pdo) >> 30) & 3)
 #define PD_SRC_PDO_TYPE_FIXED		0
@@ -173,6 +173,9 @@ typedef enum {
 	CHARGER_SUBTYPE_FASTCHG_SVOOC,
 	CHARGER_SUBTYPE_PD,
 	CHARGER_SUBTYPE_QC,
+	CHARGER_SUBTYPE_PPS,
+	CHARGER_SUBTYPE_UFCS,
+	CHARGER_SUBTYPE_PE20,
 } OPLUS_CHARGER_SUBTYPE;
 
 typedef enum {
@@ -208,6 +211,14 @@ enum {
 	NOTIFY_SHORT_C_BAT_DYNAMIC_ERR_CODE5,
 	NOTIFY_CHARGER_TERMINAL,
 	NOTIFY_GAUGE_I2C_ERR,
+	NOTIFY_FAST_CHG_END_ERROR = 23,
+	NOTIFY_MOS_OPEN_ERROR,
+	NOTIFY_CURRENT_UNBALANCE,
+	NOTIFY_GAUGE_STUCK = 26,
+	NOTIFY_GAUGE_SOC_JUMP,
+	NOTIFY_ANTI_EXPANSION_WARNING,
+	NOTIFY_ANTI_EXPANSION_ERROR,
+	NOTIFY_FASTCHG_CHECK_FAIL,
 };
 
 enum oplus_chg_err_code {
@@ -257,17 +268,6 @@ enum oplus_chg_usb_type {
 	OPLUS_CHG_USB_TYPE_MAX,
 };
 
-enum oplus_chg_wls_type {
-	OPLUS_CHG_WLS_UNKNOWN,
-	OPLUS_CHG_WLS_BPP,
-	OPLUS_CHG_WLS_EPP,
-	OPLUS_CHG_WLS_EPP_PLUS,
-	OPLUS_CHG_WLS_VOOC,
-	OPLUS_CHG_WLS_SVOOC,
-	OPLUS_CHG_WLS_PD_65W,
-	OPLUS_CHG_WLS_TRX,
-};
-
 enum oplus_chg_temp_region_type {
 	OPLUS_CHG_BATT_TEMP_COLD = 0,
 	OPLUS_CHG_BATT_TEMP_LITTLE_COLD,
@@ -288,22 +288,59 @@ enum oplus_chg_wls_rx_mode {
 	OPLUS_CHG_WLS_RX_MODE_EPP_5W,
 };
 
-enum oplus_chg_wls_trx_status {
-	OPLUS_CHG_WLS_TRX_STATUS_ENABLE,
-	OPLUS_CHG_WLS_TRX_STATUS_CHARGING,
-	OPLUS_CHG_WLS_TRX_STATUS_DISENABLE,
+enum oplus_chg_wls_event_code {
+	WLS_EVENT_RX_UNKNOWN,
+	WLS_EVENT_RX_EPP_CAP,
+	WLS_EVENT_RX_UVP_ALARM,
+	WLS_EVENT_RX_UVP_CLEAR,
+	WLS_EVENT_TRX_CHECK,
+	WLS_EVENT_VAC_PRESENT,
+	WLS_EVENT_FORCE_UPGRADE,
+	WLS_EVENT_RXAC_ATTACH,
+	WLS_EVENT_RXAC_DETACH,
 };
 
+enum fastchg_protocol_type {
+	PROTOCOL_CHARGING_UNKNOWN = 0,
+	PROTOCOL_CHARGING_PPS_OPLUS,
+	PROTOCOL_CHARGING_PPS_THIRD,
+	PROTOCOL_CHARGING_UFCS_THIRD,
+	PROTOCOL_CHARGING_UFCS_OPLUS,
+	PROTOCOL_CHARGING_SVOOC_OPLUS,
+	PROTOCOL_CHARGING_SVOOC_THIRD,
+	PROTOCOL_CHARGING_MAX = 100,
+};
+
+enum oplus_sili_id_match_info {
+	ID_NOT_MATCH = 0,
+	ID_MATCH_SILI,
+	ID_MATCH_IGNORE,
+};
+
+struct oplus_gauge_lifetime {
+	short max_cell_vol;
+	short max_charge_curr;
+	short max_dischg_curr;
+	char max_cell_temp;
+	char min_cell_temp;
+};
+
+/*wired:bit[0~15], wireless:bit[16~30]*/
 #define USB_TEMP_HIGH		BIT(0)
 #define USB_WATER_DETECT	BIT(1)
-#define USB_RESERVE2		BIT(2)
+#define OTG_ENABLE_PENDING	BIT(2)
 #define USB_RESERVE3		BIT(3)
 #define USB_RESERVE4		BIT(4)
+#define WLS_CONNECT_PENDING	BIT(16)
+#define WLS_RESERVE17		BIT(17)
 #define USB_DONOT_USE		BIT(31)
 
 bool oplus_is_power_off_charging(void);
 bool oplus_is_charger_reboot(void);
 struct timespec oplus_current_kernel_time(void);
 bool oplus_is_ptcrb_version(void);
-
+int oplus_get_chg_spec_version(void);
+uint8_t oplus_chg_get_region_id(void);
+unsigned int oplus_chg_get_nvid_support_flags(void);
+bool oplus_chg_get_common_charge_icl_support_flags(void);
 #endif /* __OPLUS_CHG_CORE_H__ */

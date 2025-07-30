@@ -38,6 +38,7 @@
 
 #include "oplus_charger.h"
 #include "oplus_pps.h"
+#include "oplus_ufcs.h"
 #include "oplus_quirks.h"
 #include "oplus_gauge.h"
 #include "oplus_vooc.h"
@@ -56,8 +57,12 @@ int oplus_get_quirks_plug_status(int type) {
 		chg_err("g_quirks_chip null!\n");
 		return 0;
 	}
-	if(oplus_is_vooc_project() != DUAL_BATT_150W && oplus_is_vooc_project() != DUAL_BATT_240W)
+
+	if(oplus_is_vooc_project() != DUAL_BATT_150W &&
+		oplus_is_vooc_project() != DUAL_BATT_240W &&
+		!oplus_get_abnormal_disconnect_keep_connect())
 		return 0;
+
 	mask = 1 << type;
 	chg_err(":%d, mask:%d\n", chip->quirks_plugin_status, (chip->quirks_plugin_status & mask) >> type);
 	return (chip->quirks_plugin_status & mask) >> type;
@@ -71,8 +76,12 @@ int oplus_set_quirks_plug_status(int type, int status) {
 		chg_err("g_quirks_chip null!\n");
 		return 0;
 	}
-	if(oplus_is_vooc_project() != DUAL_BATT_150W && oplus_is_vooc_project() != DUAL_BATT_240W)
+
+	if(oplus_is_vooc_project() != DUAL_BATT_150W &&
+		oplus_is_vooc_project() != DUAL_BATT_240W &&
+		!oplus_get_abnormal_disconnect_keep_connect())
 		return 0;
+
 	enable = status << type;
 	mask = 1 << type;
 	chip->quirks_plugin_status = (chip->quirks_plugin_status & ~mask) | (enable & mask);
@@ -86,8 +95,12 @@ int oplus_clear_quirks_plug_status(void) {
 		chg_err("g_quirks_chip null!\n");
 		return 0;
 	}
-	if(oplus_is_vooc_project() != DUAL_BATT_150W && oplus_is_vooc_project() != DUAL_BATT_240W)
+
+	if(oplus_is_vooc_project() != DUAL_BATT_150W &&
+		oplus_is_vooc_project() != DUAL_BATT_240W &&
+		!oplus_get_abnormal_disconnect_keep_connect())
 		return 0;
+
 	chg_err(":%d\n", chip->quirks_plugin_status);
 	chip->quirks_plugin_status = QUIRKS_NORMAL;
 	return chip->quirks_plugin_status;
@@ -118,10 +131,12 @@ static void oplus_quirks_set_awake(struct oplus_quirks_chip *chip, int time_ms)
 #else
 	if (!chip || !chip->awake_lock)
 		return;
-	if(oplus_is_vooc_project() != DUAL_BATT_150W && oplus_is_vooc_project() != DUAL_BATT_240W)
+	if(oplus_is_vooc_project() != DUAL_BATT_150W &&
+		oplus_is_vooc_project() != DUAL_BATT_240W &&
+		!oplus_get_abnormal_disconnect_keep_connect())
 		return;
-	chg_err(":%d, :%p\n", time_ms, chip->awake_lock->timer.function);
 
+	chg_err(":%d, :%p\n", time_ms, chip->awake_lock->timer.function);
 	__pm_wakeup_event(chip->awake_lock, time_ms);
 
 	chg_err("end :%d\n", time_ms);
@@ -141,8 +156,11 @@ int abnormal_diconnect_count(void) {
 		chg_err("g_quirks_chip->plug_info_head.list null!\n");
 		return 0;
 	}
-	if(oplus_is_vooc_project() != DUAL_BATT_150W && oplus_is_vooc_project() != DUAL_BATT_240W)
+	if(oplus_is_vooc_project() != DUAL_BATT_150W &&
+		oplus_is_vooc_project() != DUAL_BATT_240W &&
+		!oplus_get_abnormal_disconnect_keep_connect())
 		return 0;
+
 	list_for_each_safe(pos, n, &g_quirks_chip->plug_info_head.list) {
 		info = list_entry(pos, struct plug_info, list);
 		if (time_is_after_jiffies(info->plugout_jiffies + msecs_to_jiffies(KEEP_CONNECT_TIME_OUT))) {
@@ -154,6 +172,15 @@ int abnormal_diconnect_count(void) {
 				info->number, i, info->plugout_jiffies, info->plugin_jiffies, jiffies, info->abnormal_diconnect, count,
 				time_is_after_jiffies(info->plugin_jiffies + msecs_to_jiffies(KEEP_CONNECT_TIME_OUT)));
 	}
+	info = &g_quirks_chip->plug_info_head;
+	if (time_is_after_jiffies(info->plugout_jiffies + msecs_to_jiffies(KEEP_CONNECT_TIME_OUT))) {
+		if (info->abnormal_diconnect == 1)
+			count++;
+	}
+	i++;
+	chg_err("info%d[%d] plugout_jiffies:%lu,plugin_jiffies:%lu, jiffies:%lu, abnormal_diconnect:%d, count:%d, in_20s:%d\n",
+		info->number, i, info->plugout_jiffies, info->plugin_jiffies, jiffies, info->abnormal_diconnect, count,
+		time_is_after_jiffies(info->plugin_jiffies + msecs_to_jiffies(KEEP_CONNECT_TIME_OUT)));
 	return count;
 }
 
@@ -169,12 +196,17 @@ void clear_abnormal_diconnect_count(void) {
 		chg_err("g_quirks_chip->plug_info_head.list null!\n");
 		return;
 	}
-	if(oplus_is_vooc_project() != DUAL_BATT_150W && oplus_is_vooc_project() != DUAL_BATT_240W)
+	if(oplus_is_vooc_project() != DUAL_BATT_150W &&
+		oplus_is_vooc_project() != DUAL_BATT_240W &&
+		!oplus_get_abnormal_disconnect_keep_connect())
 		return;
+
 	list_for_each_safe(pos, n, &g_quirks_chip->plug_info_head.list) {
 		info = list_entry(pos, struct plug_info, list);
 		info->abnormal_diconnect = 0;
 	}
+	info = &g_quirks_chip->plug_info_head;
+	info->abnormal_diconnect = 0;
 	chg_err("!!\n");
 	return;
 }
@@ -228,10 +260,11 @@ int oplus_quirks_keep_connect_status(void) {
 		chg_err("g_quirks_chip->plug_info_head.list null!\n");
 		return 0;
 	}
-	if(oplus_is_vooc_project() == DUAL_BATT_150W || oplus_is_vooc_project() == DUAL_BATT_240W) {
+
+	if(oplus_is_vooc_project() == DUAL_BATT_150W ||
+		oplus_is_vooc_project() == DUAL_BATT_240W ||
+		oplus_get_abnormal_disconnect_keep_connect()) {
 		if (chip->keep_connect) {
-			pps_err("keep_connect!:last_plugin_status:%d, keep_connect:%d, keep_connect_jiffies:%lu, jiffies:%lu\n",
-					chip->last_plugin_status, chip->keep_connect, chip->keep_connect_jiffies, jiffies);
 			return 1;
 		}
 	}
@@ -256,6 +289,7 @@ static void update_plugin_status(struct timer_list *unused)
 			atomic_read(&chip->last_plugin_status), chip->keep_connect, chip->keep_connect_jiffies, jiffies);
 	if (atomic_read(&chip->last_plugin_status) == 0) {
 		oplus_pps_clear_last_charging_status();
+		oplus_ufcs_clear_last_charging_status();
 		oplus_voocphy_clear_last_fast_chg_type();
 		oplus_clear_quirks_plug_status();
 		oplus_adsp_voocphy_force_svooc(0);
@@ -294,9 +328,7 @@ static void oplus_quirks_update_plugin_timer(struct oplus_quirks_chip *chip, uns
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
 	mod_timer(&chip->update_plugin_timer, jiffies + msecs_to_jiffies(25000));
 #else
-	try_to_del_timer_sync(&chip->update_plugin_timer);
-	chip->update_plugin_timer.expires  = jiffies + msecs_to_jiffies(ms);
-	add_timer(&chip->update_plugin_timer);
+	mod_timer(&chip->update_plugin_timer, jiffies + msecs_to_jiffies(ms));
 #endif
 }
 
@@ -307,6 +339,7 @@ int oplus_quirks_notify_plugin(int plugin) {
 	int count;
 	int cc_online = 0;
 	static int last_plugin = -1;
+	struct oplus_pps_chip *pps_chip;
 
 	if (!chip) {
 		chg_err("g_quirks_chip null!\n");
@@ -327,6 +360,7 @@ int oplus_quirks_notify_plugin(int plugin) {
 	}
 
 	chg_err("plugin:%d, last_plugin:%d\n", plugin, last_plugin);
+	pps_chip = oplus_pps_get_pps_chip();
 	if (last_plugin == plugin) {
 		chg_err("plugin:%d, last_plugin:%d, return\n", plugin, last_plugin);
 		return 0;
@@ -357,19 +391,24 @@ int oplus_quirks_notify_plugin(int plugin) {
 						chg_err("abnormal_diconnect_count:%d, cc_online:%d, force 5V2A keep connect", count, cc_online);
 					}
 					oplus_pps_clear_last_charging_status();
+					oplus_ufcs_clear_last_charging_status();
 					oplus_voocphy_clear_last_fast_chg_type();
 					oplus_set_quirks_plug_status(QUIRKS_STOP_PPS, 1);
+					oplus_set_quirks_plug_status(QUIRKS_STOP_UFCS, 1);
 					oplus_set_quirks_plug_status(QUIRKS_STOP_ADSP_VOOCPHY, 1);
 					oplus_adsp_voocphy_force_svooc(0);
 					if (oplus_chg_get_voocphy_support() == ADSP_VOOCPHY) {
 						oplus_quirks_voocphy_turn_on(0);
 					}
 					oplus_quirks_update_plugin_timer(chip, ABNORMAL_DISCONNECT_INTERVAL);
+					oplus_pps_track_upload_err_info(pps_chip, TRACK_PPS_ERR_QUIRKS_COUNT, count);
 				} else if (count >= PPS_CONNECT_ERROR_COUNT_LEVEL_1) {
 					chip->keep_connect = 1;
 					oplus_set_quirks_plug_status(QUIRKS_STOP_PPS, 1);
+					oplus_set_quirks_plug_status(QUIRKS_STOP_UFCS, 1);
 					oplus_adsp_voocphy_force_svooc(1);
 					oplus_quirks_update_plugin_timer(chip, ABNORMAL_DISCONNECT_INTERVAL);
+					oplus_pps_track_upload_err_info(pps_chip, TRACK_PPS_ERR_QUIRKS_COUNT, count);
 					chg_err("abnormal_diconnect_count:%d, cc_online:%d, do not keep connect, force svooc", count, cc_online);
 				} else {
 					chip->keep_connect = 1;
@@ -380,6 +419,7 @@ int oplus_quirks_notify_plugin(int plugin) {
 			} else {
 				chip->keep_connect = 0;
 				oplus_pps_clear_last_charging_status();
+				oplus_ufcs_clear_last_charging_status();
 				oplus_voocphy_clear_last_fast_chg_type();
 				oplus_clear_quirks_plug_status();
 				clear_abnormal_diconnect_count();
@@ -402,6 +442,7 @@ int oplus_quirks_notify_plugin(int plugin) {
 	chg_err(":last_plugin_status:%d, keep_connect:%d keep_connect_jiffies:%lu, jiffies:%lu\n",
 			atomic_read(&chip->last_plugin_status), chip->keep_connect, chip->keep_connect_jiffies, jiffies);
 	oplus_pps_clear_startup_retry();
+	oplus_ufcs_clear_startup_retry();
 	return 0;
 }
 
@@ -436,7 +477,7 @@ int oplus_quirks_init(struct oplus_chg_chip *chg_chip)
 			goto error;
 		memset(info, 0, sizeof(struct plug_info));
 		list_add(&info->list, &g_quirks_chip->plug_info_head.list);
-		info->number = i;
+		info->number = i + 1;
 		chg_err("%d\n", i);
 	}
 
