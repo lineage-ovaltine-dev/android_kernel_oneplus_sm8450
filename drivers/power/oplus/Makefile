@@ -31,4 +31,10 @@ endif
 endif
 
 obj-$(CONFIG_OPLUS_CHG_TEST_KIT) += test-kit/
+obj-$(CONFIG_OPLUS_FEATURE_CHG_DEBUG_KIT) += debug-kit/
 obj-$(CONFIG_OPLUS_DYNAMIC_CONFIG) += config/
+obj-$(CONFIG_OPLUS_WIRELESS_PEN) += wireless_pen/
+
+ifdef CONFIG_OPLUS_PD_EXT_SUPPORT
+obj-$(CONFIG_TCPC_CLASS) += pd_ext/
+endif
