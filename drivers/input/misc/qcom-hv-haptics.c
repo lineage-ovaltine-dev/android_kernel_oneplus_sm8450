@@ -33,9 +33,6 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/qcom_haptics.h>
 
-#undef dev_dbg
-#define dev_dbg dev_err
-
 /* status register definitions in HAPTICS_CFG module */
 #define HAP_CFG_REVISION1_REG			0x00
 #define HAP_CFG_V1				0x1
