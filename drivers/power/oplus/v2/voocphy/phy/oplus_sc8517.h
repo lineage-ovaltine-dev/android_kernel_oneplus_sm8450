@@ -51,9 +51,16 @@
 
 #define FUNCTION_DISABLE_REG    0x13
 
+#define DEVICE_ID_REG             0x14
+
 #define OTG_REG                 0x15
 #define OTG_ENABLE              0x3
 #define OTG_DISABLE             0
+
+#define ENABLE_MOS              0x7B
+#define DISENABLE_MOS           0x78
+#define I2C_ERR_NUM 10
+#define MAIN_I2C_ERROR (1 << 0)
 
 /* Register 00h */
 #define SC8517_REG_00                      0x00
@@ -74,6 +81,9 @@
 #define SC8517_VAC_INRANGE_EN_SHIFT                 1
 #define SC8517_VAC_INRANGE_ENABLE                   0
 #define SC8517_VAC_INRANGE_DISABLE                  1
+
+/* Register 03h */
+#define SC8517_REG_03                      0x03
 
 /* Register 04h */
 #define SC8517_REG_04                      0x04
