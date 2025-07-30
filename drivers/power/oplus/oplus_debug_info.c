@@ -142,11 +142,11 @@ enum {
 #define OPLUS_CHG_BATT_AGING_CAP_DECREASE 300
 
 #define OPLUS_CHG_BATT_INVALID_CAPACITY  -0x1010101
-#define OPLUS_CHG_BATT_S0C_CAPACITY_LOAD_JUMP_NUM      5
-#define OPLUS_CHG_BATT_UI_S0C_CAPACITY_LOAD_JUMP_NUM   5
-#define OPLUS_CHG_BATT_S0C_CAPACITY_JUMP_NUM           3
-#define OPLUS_CHG_BATT_UI_S0C_CAPACITY_JUMP_NUM        5
-#define OPLUS_CHG_BATT_UI_TO_S0C_CAPACITY_JUMP_NUM     3
+#define OPLUS_CHG_BATT_SOC_CAPACITY_LOAD_JUMP_NUM      5
+#define OPLUS_CHG_BATT_UI_SOC_CAPACITY_LOAD_JUMP_NUM   5
+#define OPLUS_CHG_BATT_SOC_CAPACITY_JUMP_NUM           3
+#define OPLUS_CHG_BATT_UI_SOC_CAPACITY_JUMP_NUM        5
+#define OPLUS_CHG_BATT_UI_TO_SOC_CAPACITY_JUMP_NUM     3
 
 #define OPLUS_CHG_MONITOR_FILE   "/data/oplus_charge/oplus_chg_debug_monitor.txt"
 #define OPLUS_CHG_BATT_AGING_CHECK_CNT   360
@@ -634,16 +634,16 @@ static void oplus_chg_print_debug_info(struct oplus_chg_chip *chip)
 		ret += snprintf(&oplus_chg_debug_msg[ret], OPLUS_CHG_DEBUG_MSG_LEN - ret,
 						"$$flag_reason@@%s", oplus_chg_debug_info.flag_reason);
 		ret += snprintf(&oplus_chg_debug_msg[ret], OPLUS_CHG_DEBUG_MSG_LEN - ret,
-					"$$charging_state@@%s", charging_state_name[chip->prop_status]);
+					"$$charging_state@@%s", (char *)&charging_state_name[chip->prop_status]);
 		ret += snprintf(&oplus_chg_debug_msg[ret], OPLUS_CHG_DEBUG_MSG_LEN - ret,
 				"$$adapter_type@@0x%x", (oplus_chg_debug_info.fast_chg_type << 8) | oplus_chg_debug_info.real_charger_type);
 		if(oplus_chg_get_vooc_adapter_name_index(chip) >= 0) {
 			ret += snprintf(&oplus_chg_debug_msg[ret], OPLUS_CHG_DEBUG_MSG_LEN - ret,
-					"$$vooc_adapter_name@@%s", vooc_adapter_name[oplus_chg_get_vooc_adapter_name_index(chip)]);
+					"$$vooc_adapter_name@@%s", (char *)&vooc_adapter_name[oplus_chg_get_vooc_adapter_name_index(chip)]);
 		}
 
 		ret += snprintf(&oplus_chg_debug_msg[ret], OPLUS_CHG_DEBUG_MSG_LEN - ret,
-					"$$norm_adapter_name@@%s", norm_adapter_name[oplus_chg_debug_info.real_charger_type]);
+					"$$norm_adapter_name@@%s", (char *)&norm_adapter_name[oplus_chg_debug_info.real_charger_type]);
 
 		ret += snprintf(&oplus_chg_debug_msg[ret], OPLUS_CHG_DEBUG_MSG_LEN - ret,
 						"$$rechg_counts@@%d", oplus_chg_debug_info.rechg_counts);/*add for rechg counts*/
@@ -829,7 +829,7 @@ static void oplus_chg_print_debug_info(struct oplus_chg_chip *chip)
 			}
 			if (chip->gauge_iic_err_time_record != 0) {
 				ret += snprintf(&oplus_chg_debug_msg[ret], OPLUS_CHG_DEBUG_MSG_LEN - ret,
-						", gauge_iic_err_%d[%d]", chip->gauge_iic_err,
+						", gauge_iic_err_%d[%ld]", chip->gauge_iic_err,
 						chip->gauge_iic_err_time_record);
 				if (chip->gauge_iic_err == false) {
 					chip->gauge_iic_err_time_record = 0;
@@ -1194,7 +1194,7 @@ static int oplus_chg_set_chg_flag(int index)
 	}
 	if (chg_check_point_debug&OPEN_LOG_BIT) {
 		chg_err("cnt: %d, index: %d, flag: 0x%x\n",
-				oplus_chg_debug_info.chg_cnt[index], index, oplus_chg_debug_info.notify_flag);
+				oplus_chg_debug_info.chg_cnt[index], index, (unsigned int)oplus_chg_debug_info.notify_flag);
 	}
 	mutex_unlock(&oplus_chg_debug_info.nflag_lock);
 
@@ -2167,11 +2167,11 @@ static int oplus_chg_chg_batt_capacity_jump_check(struct oplus_chg_chip *chip)
 		oplus_chg_debug_info.cur_ui_soc = chip->ui_soc;
 		oplus_chg_debug_info.pre_ui_soc = chip->ui_soc;
 
-		if (abs(oplus_chg_debug_info.cur_soc - chip->soc_load) > OPLUS_CHG_BATT_S0C_CAPACITY_LOAD_JUMP_NUM) {
+		if (abs(oplus_chg_debug_info.cur_soc - chip->soc_load) > OPLUS_CHG_BATT_SOC_CAPACITY_LOAD_JUMP_NUM) {
 			oplus_chg_debug_info.soc_load_flag |= 1 << OPLUS_NOTIFY_BATT_SOC_CAPCITY_LOAD_JUMP;
 		}
 
-		if (abs(oplus_chg_debug_info.cur_ui_soc - chip->soc_load) > OPLUS_CHG_BATT_UI_S0C_CAPACITY_LOAD_JUMP_NUM) {
+		if (abs(oplus_chg_debug_info.cur_ui_soc - chip->soc_load) > OPLUS_CHG_BATT_UI_SOC_CAPACITY_LOAD_JUMP_NUM) {
 			oplus_chg_debug_info.soc_load_flag |= 1 << OPLUS_NOTIFY_BATT_UI_SOC_CAPCITY_LOAD_JUMP;
 		}
 
@@ -2199,7 +2199,7 @@ static int oplus_chg_chg_batt_capacity_jump_check(struct oplus_chg_chip *chip)
 			oplus_chg_debug_info.cur_soc = chip->soc;
 			oplus_chg_debug_info.cur_ui_soc = chip->ui_soc;
 		}
-		if ((abs(oplus_chg_debug_info.cur_soc - oplus_chg_debug_info.pre_soc) > OPLUS_CHG_BATT_S0C_CAPACITY_JUMP_NUM)
+		if ((abs(oplus_chg_debug_info.cur_soc - oplus_chg_debug_info.pre_soc) > OPLUS_CHG_BATT_SOC_CAPACITY_JUMP_NUM)
 				&& (!oplus_chg_soc_notified_flag_is_set(OPLUS_NOTIFY_BATT_SOC_CAPCITY_JUMP))) {
 			oplus_chg_set_chg_flag(OPLUS_NOTIFY_BATT_SOC_CAPCITY_JUMP);
 			if (oplus_chg_debug_notify_flag_is_set(OPLUS_NOTIFY_BATT_SOC_CAPCITY_JUMP)) {
@@ -2212,7 +2212,7 @@ static int oplus_chg_chg_batt_capacity_jump_check(struct oplus_chg_chip *chip)
 			if (oplus_chg_debug_info.cur_soc == oplus_chg_debug_info.pre_soc) {
 				oplus_chg_unset_soc_notified_flag(OPLUS_NOTIFY_BATT_SOC_CAPCITY_JUMP);
 			}
-			if ((abs(oplus_chg_debug_info.cur_ui_soc - oplus_chg_debug_info.pre_ui_soc) > OPLUS_CHG_BATT_UI_S0C_CAPACITY_JUMP_NUM)
+			if ((abs(oplus_chg_debug_info.cur_ui_soc - oplus_chg_debug_info.pre_ui_soc) > OPLUS_CHG_BATT_UI_SOC_CAPACITY_JUMP_NUM)
 					&& (!oplus_chg_soc_notified_flag_is_set(OPLUS_NOTIFY_BATT_UI_SOC_CAPCITY_JUMP))) {
 				oplus_chg_set_chg_flag(OPLUS_NOTIFY_BATT_UI_SOC_CAPCITY_JUMP);
 				if (oplus_chg_debug_notify_flag_is_set(OPLUS_NOTIFY_BATT_UI_SOC_CAPCITY_JUMP)) {
@@ -2225,7 +2225,7 @@ static int oplus_chg_chg_batt_capacity_jump_check(struct oplus_chg_chip *chip)
 				if (oplus_chg_debug_info.cur_ui_soc == oplus_chg_debug_info.pre_ui_soc) {
 					oplus_chg_unset_soc_notified_flag(OPLUS_NOTIFY_BATT_UI_SOC_CAPCITY_JUMP);
 				}
-				if ((abs(oplus_chg_debug_info.cur_ui_soc - oplus_chg_debug_info.cur_soc) > OPLUS_CHG_BATT_UI_TO_S0C_CAPACITY_JUMP_NUM)
+				if ((abs(oplus_chg_debug_info.cur_ui_soc - oplus_chg_debug_info.cur_soc) > OPLUS_CHG_BATT_UI_TO_SOC_CAPACITY_JUMP_NUM)
 						&& (!oplus_chg_soc_notified_flag_is_set(OPLUS_NOTIFY_BATT_UI_TO_SOC_CAPCITY_JUMP))
 						&& ui_to_soc_jump_flag == false) {
 					oplus_chg_set_chg_flag(OPLUS_NOTIFY_BATT_UI_TO_SOC_CAPCITY_JUMP);

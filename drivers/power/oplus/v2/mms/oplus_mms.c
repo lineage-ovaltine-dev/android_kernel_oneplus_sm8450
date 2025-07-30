@@ -30,6 +30,7 @@ static struct device_type oplus_mms_dev_type;
 static struct workqueue_struct	*mms_wq;
 static DEFINE_MUTEX(wait_list_lock);
 static LIST_HEAD(oplus_mms_wait_list);
+static void oplus_mms_call(struct oplus_mms *topic);
 static struct mms_item *oplus_mms_get_item(struct oplus_mms *mms, u32 id)
 {
 	struct mms_item *item_table = mms->desc->item_table;
@@ -53,12 +54,80 @@ bool oplus_mms_item_is_str(struct oplus_mms *mms, u32 id)
 		return false;
 	}
 	item = oplus_mms_get_item(mms, id);
-	if (mms == NULL) {
+	if (item == NULL) {
 		chg_err("%s item(=%d) not found\n", mms->desc->name, id);
 		return false;
 	}
 
 	return item->desc.str_data;
+}
+
+int oplus_mms_set_update_mode(struct oplus_mms *mms, bool update)
+{
+	if (mms == NULL) {
+		chg_err("mms is NULL");
+		return -ENODEV;
+	}
+
+	mms->force_update = update;
+	if (mms->desc->set_update_mode)
+		mms->desc->set_update_mode(mms, update);
+
+	return 0;
+}
+
+int oplus_mms_get_update_mode(struct oplus_mms *mms)
+{
+	int val = 0;
+	if (mms == NULL) {
+		chg_err("mms is NULL");
+		return 0;
+	}
+
+	if (mms->force_update)
+		val = 1;
+
+	return val;
+}
+
+int oplus_mms_set_item_enable(struct oplus_mms *mms, u32 item_id)
+{
+	struct mms_item *item;
+
+	if (mms == NULL || mms->desc == NULL ||
+	    !mms->desc->item_table) {
+		chg_err("mms or item_table is NULL");
+		return -ENODEV;
+	}
+	item = oplus_mms_get_item(mms, item_id);
+	if (item == NULL) {
+		chg_err("topic(=%s) item(=%d) not found\n", mms->desc->name,
+			item_id);
+		return -EINVAL;
+	}
+	item->disabled = false;
+
+	return 0;
+}
+
+int oplus_mms_set_item_disable(struct oplus_mms *mms, u32 item_id)
+{
+	struct mms_item *item;
+
+	if (mms == NULL || mms->desc == NULL ||
+	    !mms->desc->item_table) {
+		chg_err("mms or item_table is NULL");
+		return -ENODEV;
+	}
+	item = oplus_mms_get_item(mms, item_id);
+	if (item == NULL) {
+		chg_err("topic(=%s) item(=%d) not found\n", mms->desc->name,
+			item_id);
+		return -EINVAL;
+	}
+	item->disabled = true;
+
+	return 0;
 }
 
 int oplus_mms_get_item_data(struct oplus_mms *mms, u32 item_id,
@@ -83,7 +152,13 @@ int oplus_mms_get_item_data(struct oplus_mms *mms, u32 item_id,
 		return -EINVAL;
 	}
 
-	if (update)
+	if (item->disabled) {
+		chg_info("topic(=%s) item(=%d) is disabled\n",
+			 mms->desc->name, item_id);
+		return -ENOTSUPP;
+	}
+
+	if (update || mms->force_update)
 		oplus_mms_item_update(mms, item_id, false);
 
 	read_lock(&item->lock);
@@ -97,6 +172,7 @@ bool oplus_mms_item_update(struct oplus_mms *mms, u32 item_id, bool check_update
 {
 	struct mms_item *item;
 	union mms_msg_data data = { 0 };
+	bool update;
 
 	if (mms == NULL || mms->desc == NULL ||
 	    !mms->desc->item_table) {
@@ -112,8 +188,9 @@ bool oplus_mms_item_update(struct oplus_mms *mms, u32 item_id, bool check_update
 	if (item->desc.update == NULL) {
 		return false;
 	}
-
+	mutex_lock(&item->update_lock);
 	item->desc.update(mms, &data);
+	mutex_unlock(&item->update_lock);
 	write_lock(&item->lock);
 	memcpy(&item->data, &data, sizeof(union mms_msg_data));
 	if (!check_update) {
@@ -164,8 +241,10 @@ bool oplus_mms_item_update(struct oplus_mms *mms, u32 item_id, bool check_update
 	}
 
 out:
+	update = item->updated;
 	write_unlock(&item->lock);
-	return item->updated;
+
+	return update;
 }
 
 static int oplus_mms_item_update_by_msg(struct oplus_mms *mms, u32 item_id,
@@ -260,7 +339,6 @@ struct mms_msg *oplus_mms_alloc_msg(enum mms_msg_type type,
 	msg->prio = prio;
 	msg->payload = MSG_LOAD_NULL;
 	msg->item_id = item_id;
-	init_completion(&msg->ack);
 
 	return msg;
 }
@@ -280,7 +358,6 @@ struct mms_msg *oplus_mms_alloc_int_msg(enum mms_msg_type type,
 	msg->payload = MSG_LOAD_INT;
 	msg->item_id = item_id;
 	*((int *)msg->buf) = data;
-	init_completion(&msg->ack);
 
 	return msg;
 }
@@ -304,9 +381,52 @@ struct mms_msg *oplus_mms_alloc_str_msg(enum mms_msg_type type,
 	va_start(args, format);
 	vsnprintf(msg->buf, TOPIC_MSG_STR_BUF, format, args);
 	va_end(args);
-	init_completion(&msg->ack);
 
 	return msg;
+}
+
+static void oplus_mms_notify_caller(struct oplus_mms *mms, struct mms_msg *msg)
+{
+	struct mms_subscribe *subs, *tmp;
+	LIST_HEAD(callback_list);
+	bool sync = msg->sync;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(subs, &mms->subscribe_list, list) {
+		if (!subs->callback)
+			continue;
+		if (sync)
+			list_add(&subs->callback_list_sync, &callback_list);
+		else
+			list_add(&subs->callback_list, &callback_list);
+	}
+	rcu_read_unlock();
+
+	/*
+	 * For messages with payload, you need to ensure that the
+	 * notification is bound to the message and is not interrupted
+	 * by other messages.
+	 */
+	if (msg->payload != MSG_LOAD_NULL)
+		oplus_mms_item_update_by_msg(mms, msg->item_id, msg);
+
+	/*
+	* The callback function needs to be called outside
+	* the RCU critical section.
+	*/
+	if (sync) {
+		list_for_each_entry_safe(subs, tmp, &callback_list, callback_list_sync) {
+			if (subs->callback)
+				subs->callback(subs, msg->type, msg->item_id, true);
+			list_del_init(&subs->callback_list_sync);
+		}
+	} else {
+		list_for_each_entry_safe(subs, tmp, &callback_list, callback_list) {
+			if (subs->callback)
+				subs->callback(subs, msg->type, msg->item_id, false);
+			list_del_init(&subs->callback_list);
+		}
+	}
 }
 
 static int __oplus_mms_publish_msg(struct oplus_mms *mms, struct mms_msg *msg)
@@ -330,12 +450,8 @@ static int __oplus_mms_publish_msg(struct oplus_mms *mms, struct mms_msg *msg)
 	 * The message must be updated before being added to the message queue
 	 * to prevent the message from not being updated after it is sent.
 	 */
-	if (msg->type != MSG_TYPE_TIMER) {
-		if (msg->payload != MSG_LOAD_NULL)
-			oplus_mms_item_update_by_msg(mms, msg->item_id, msg);
-		else
-			update = oplus_mms_item_update(mms, msg->item_id, true);
-	}
+	if (msg->type != MSG_TYPE_TIMER && msg->payload == MSG_LOAD_NULL)
+		update = oplus_mms_item_update(mms, msg->item_id, true);
 
 	/*
 	 * Do not publish when the message does not
@@ -343,6 +459,14 @@ static int __oplus_mms_publish_msg(struct oplus_mms *mms, struct mms_msg *msg)
 	 */
 	if (!update) {
 		kfree(msg);
+		return (int)update;
+	}
+
+	/* sync msg need to be processed directly here */
+	if (msg->sync) {
+		mutex_lock(&mms->sync_msg_lock);
+		oplus_mms_notify_caller(mms, msg);
+		mutex_unlock(&mms->sync_msg_lock);
 		return (int)update;
 	}
 
@@ -411,12 +535,8 @@ int oplus_mms_publish_msg_sync(struct oplus_mms *mms, struct mms_msg *msg)
 	rc = __oplus_mms_publish_msg(mms, msg);
 	if (rc <= 0)
 		return rc;
-
-	wait_for_completion(&msg->ack);
-	/* 
+	/*
 	 * sync need to be released by the sender.
-	 * we need to ensure that msg is not released before
-	 * calling wait_for_completion.
 	 */
 	kfree(msg);
 
@@ -439,7 +559,7 @@ int oplus_mms_publish_ic_err_msg(struct oplus_mms *topic, u32 item_id,
 		return -ENOMEM;
 	}
 
-	rc = oplus_mms_publish_msg(topic, topic_msg);
+	rc = oplus_mms_publish_msg_sync(topic, topic_msg);
 	if (rc < 0) {
 		chg_err("publish topic msg error, rc=%d\n", rc);
 		kfree(topic_msg);
@@ -568,6 +688,18 @@ int oplus_mms_wait_topic(const char *name, mms_callback_t call, void *data)
 	list_add(&head->list, &oplus_mms_wait_list);
 	mutex_unlock(&wait_list_lock);
 
+	/*
+	 * The topic here may have been registered, but the registered
+	 * callback function has not been called, so we need to check
+	 * again here.
+	 */
+	topic = oplus_mms_get_by_name(name);
+	if (topic == NULL)
+		return 0;
+	if (!topic->initialized)
+		return 0;
+	oplus_mms_call(topic);
+
 	return 0;
 }
 
@@ -595,7 +727,7 @@ static void oplus_mms_call(struct oplus_mms *topic)
 __printf(4, 5)
 struct mms_subscribe *oplus_mms_subscribe(
 	struct oplus_mms *mms, void *priv_data,
-	void (*callback)(struct mms_subscribe *, enum mms_msg_type, u32),
+	void (*callback)(struct mms_subscribe *, enum mms_msg_type, u32, bool),
 	const char *format, ...)
 {
 	struct mms_subscribe *subs, *subs_temp;
@@ -624,7 +756,7 @@ struct mms_subscribe *oplus_mms_subscribe(
 	}
 	spin_unlock(&mms->subscribe_lock);
 
-	subs = kzalloc(sizeof(struct oplus_mms), GFP_KERNEL);
+	subs = kzalloc(sizeof(struct mms_subscribe), GFP_KERNEL);
 	if (subs == NULL) {
 		chg_err("alloc subs memory error\n");
 		return ERR_PTR(-ENOMEM);
@@ -636,6 +768,7 @@ struct mms_subscribe *oplus_mms_subscribe(
 	subs->callback = callback;
 	subs->mms = mms;
 	INIT_LIST_HEAD(&subs->callback_list);
+	INIT_LIST_HEAD(&subs->callback_list_sync);
 
 	spin_lock(&mms->subscribe_lock);
 	list_add_tail_rcu(&subs->list, &mms->subscribe_list);
@@ -758,10 +891,6 @@ static ssize_t subscribe_show(struct device *dev, struct device_attribute *attr,
 	list_for_each_entry_rcu(subs, &mms->subscribe_list, list)
 		len += sprintf(buf + len, "%s\n", subs->name);
 	rcu_read_unlock();
-	if (len > 0) {
-		len--;
-		buf[len] = 0;
-	}
 
 	return len;
 }
@@ -780,7 +909,7 @@ enum {
 	TOPIC_ENV_MAX,
 };
 
-static void debug_subs_callback(struct mms_subscribe *subs, enum mms_msg_type type, u32 id)
+static void debug_subs_callback(struct mms_subscribe *subs, enum mms_msg_type type, u32 id, bool sync)
 {
 	struct oplus_mms *mms = subs->priv_data;
 	struct mms_item *item;
@@ -851,9 +980,7 @@ static void oplus_mms_msg_work(struct work_struct *work)
 {
 	struct oplus_mms *mms = container_of(work, struct oplus_mms,
 					msg_work.work);
-	struct mms_subscribe *subs, *tmp;
 	struct mms_msg *msg;
-	LIST_HEAD(callback_list);
 
 	rcu_read_lock();
 	if (list_empty(&mms->msg_list)) {
@@ -867,30 +994,14 @@ static void oplus_mms_msg_work(struct work_struct *work)
 		return;
 	}
 	msg = list_entry_rcu(mms->msg_list.next, struct mms_msg, list);
-	list_for_each_entry_rcu(subs, &mms->subscribe_list, list) {
-		if (subs->callback)
-			list_add(&subs->callback_list, &callback_list);
-	}
 	rcu_read_unlock();
-
-	/*
-	 * The callback function needs to be called outside
-	 * the RCU critical section.
-	 */
-	list_for_each_entry_safe(subs, tmp, &callback_list, callback_list) {
-		if (subs->callback)
-			subs->callback(subs, msg->type, msg->item_id);
-		list_del_init(&subs->callback_list);
-	}
+	oplus_mms_notify_caller(mms, msg);
 
 	mutex_lock(&mms->msg_lock);
 	list_del_rcu(&msg->list);
 	mutex_unlock(&mms->msg_lock);
 	synchronize_rcu();
-	if (msg->sync)
-		complete(&msg->ack);
-	else
-		kfree(msg); /* sync msg need to be released by the sender */
+	kfree(msg);
 
 	queue_delayed_work(mms_wq, &mms->msg_work, 0);
 }
@@ -940,7 +1051,7 @@ __oplus_mms_register(struct device *parent, const struct oplus_mms_desc *desc,
 	struct oplus_mms *mms;
 	int rc;
 	int i;
-#ifdef CONFIG_OPLUS_CHG_IC_DEBUG
+#ifdef CONFIG_OPLUS_CHG_MMS_DEBUG
 	struct device_attribute **attrs;
 	struct device_attribute *attr;
 #endif
@@ -968,6 +1079,7 @@ __oplus_mms_register(struct device *parent, const struct oplus_mms_desc *desc,
 	dev->release = oplus_mms_dev_release;
 	dev_set_drvdata(dev, mms);
 	mms->desc = desc;
+	mms->force_update = false;
 	if (cfg) {
 		dev->groups = cfg->attr_grp;
 		mms->drv_data = cfg->drv_data;
@@ -986,9 +1098,13 @@ __oplus_mms_register(struct device *parent, const struct oplus_mms_desc *desc,
 
 	spin_lock_init(&mms->subscribe_lock);
 	mutex_init(&mms->msg_lock);
+	mutex_init(&mms->sync_msg_lock);
 	spin_lock_init(&mms->changed_lock);
-	for (i = 0; i < desc->item_num; i++)
+	for (i = 0; i < desc->item_num; i++) {
+		desc->item_table[i].disabled = false;
 		rwlock_init(&desc->item_table[i].lock);
+		mutex_init(&desc->item_table[i].update_lock);
+	}
 	INIT_DELAYED_WORK(&mms->update_work, oplus_mms_update_work);
 	INIT_DELAYED_WORK(&mms->msg_work, oplus_mms_msg_work);
 	INIT_LIST_HEAD(&mms->subscribe_list);
@@ -1132,8 +1248,11 @@ void oplus_mms_unregister(struct oplus_mms *mms)
 	device_unregister(&mms->dev);
 }
 
-
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0))
+static int oplus_mms_uevent(const struct device *dev, struct kobj_uevent_env *env)
+#else
 static int oplus_mms_uevent(struct device *dev, struct kobj_uevent_env *env)
+#endif
 {
 	return 0;
 }
@@ -1145,7 +1264,11 @@ void *oplus_mms_get_drvdata(struct oplus_mms *mms)
 
 static __init int oplus_mms_class_init(void)
 {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0))
+	oplus_mms_class = class_create("oplus_mms");
+#else
 	oplus_mms_class = class_create(THIS_MODULE, "oplus_mms");
+#endif
 
 	if (IS_ERR(oplus_mms_class))
 		return PTR_ERR(oplus_mms_class);

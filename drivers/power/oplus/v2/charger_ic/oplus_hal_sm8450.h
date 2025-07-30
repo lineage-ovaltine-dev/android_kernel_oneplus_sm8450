@@ -29,15 +29,22 @@
 #endif
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
-#define OEM_OPCODE_READ_BUFFER    0x10000
-#define OEM_READ_WAIT_TIME_MS    500
+#define OEM_OPCODE_READ_BUFFER     0x10000
+#define BCC_OPCODE_READ_BUFFER     0x10003
+#define PPS_OPCODE_READ_BUFFER     0x10004
+#define AP_OPCODE_UFCS_BUFFER      0x10005
+#define OEM_READ_WAIT_TIME_MS      500
 #define MAX_OEM_PROPERTY_DATA_SIZE 128
-#define QC_TYPE_CHECK_INTERVAL 200 /* ms */
+#define QC_TYPE_CHECK_INTERVAL     200 /* ms */
+#define AP_UFCS_WAIT_TIME_MS       500
+#define MAX_UFCS_CAPS_ITEM         16
 #endif
 
 #define MSG_OWNER_BC			32778
 #define MSG_TYPE_REQ_RESP		1
 #define MSG_TYPE_NOTIFY			2
+
+#define MSLEEP_35MS 35
 
 /* opcode for battery charger */
 #define BC_SET_NOTIFY_REQ		0x04
@@ -78,6 +85,12 @@
 #define BC_ADSP_NOTIFY_AP_CP_MOS_DISABLE	0x0064
 #define BC_PPS_OPLUS				0x65
 #define BC_ADSP_NOTIFY_TRACK			0x66
+#define BC_UFCS_TEST_MODE_TRUE		0X68
+#define BC_UFCS_TEST_MODE_FALSE		0X69
+#define BC_UFCS_POWER_READY		0X70
+#define BC_UFCS_HANDSHAKE_OK		0X71
+#define BC_UFCS_DISABLE_MOS		0X72
+#define BC_UFCS_PDO_READY		0X74
 #endif
 
 #ifdef OPLUS_FEATURE_CHG_BASIC
@@ -294,6 +307,17 @@ struct oem_read_buffer_resp_msg {
 	u32 data_buffer[MAX_OEM_PROPERTY_DATA_SIZE];
 	u32 data_size;
 };
+
+struct oplus_ap_read_ufcs_req_msg {
+	struct pmic_glink_hdr hdr;
+	u32 data_size;
+};
+
+struct oplus_ap_read_ufcs_resp_msg {
+	struct pmic_glink_hdr hdr;
+	u64 data_buffer[MAX_UFCS_CAPS_ITEM];
+	u32 data_size;
+};
 #endif
 
 enum lcm_en_status {
@@ -313,6 +337,24 @@ enum ship_mode_type {
 	SHIP_MODE_PMIC,
 	SHIP_MODE_PACK_SIDE,
 };
+
+typedef enum {
+	DOUBLE_SERIES_WOUND_CELLS = 0,
+	SINGLE_CELL,
+	DOUBLE_PARALLEL_WOUND_CELLS,
+} SCC_CELL_TYPE;
+
+typedef enum {
+	TI_GAUGE = 0,
+	SW_GAUGE,
+	UNKNOWN_GAUGE_TYPE,
+} SCC_GAUGE_TYPE;
+
+#define DEVICE_BQ27541 0
+#define DEVICE_BQ27411 1
+#define DEVICE_BQ28Z610 2
+#define DEVICE_ZY0602 3
+#define DEVICE_ZY0603 4
 
 /* property ids */
 enum battery_property_id {
@@ -362,10 +404,97 @@ enum battery_property_id {
 	BATT_ZY0603_CHECK_RC_SFR,
 	BATT_ZY0603_SOFT_RESET,
 	BATT_AFI_UPDATE_DONE,
+	BATT_BAT_FULL_VOL_SET,
+	BATT_BAT_FULL_CURR_SET,
+	BATT_DEEP_DISCHG_COUNT,
+	BATT_DEEP_TERM_VOLT,
+	BATT_SET_FIRST_USAGE_DATE,
+	BATT_SET_UI_CYCLE_COUNT,
+	BATT_SET_UI_SOH,
+	BATT_SET_USED_FLAG,
+	BATT_DEEP_DISCHG_LAST_CC,
+	BATT_GET_UFCS_RUNNING_STATE,
 #endif
 	BATT_PROP_MAX,
 };
 
+#if defined CONFIG_OPLUS_SM8550_CHARGER
+enum usb_property_id {
+	USB_ONLINE,
+	USB_VOLT_NOW,
+	USB_VOLT_MAX,
+	USB_CURR_NOW,
+	USB_CURR_MAX,
+	USB_INPUT_CURR_LIMIT,
+	USB_TYPE,
+	USB_ADAP_TYPE,
+	USB_MOISTURE_DET_EN,
+	USB_MOISTURE_DET_STS,
+	USB_TEMP,
+	USB_REAL_TYPE,
+	USB_TYPEC_COMPLIANT,
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	USB_ADAP_SUBTYPE,/*sjc add*/
+	USB_VBUS_COLLAPSE_STATUS,
+	USB_VOOCPHY_STATUS,
+	USB_VOOCPHY_ENABLE,
+	USB_OTG_AP_ENABLE,
+	USB_OTG_SWITCH,
+	USB_POWER_SUPPLY_RELEASE_FIXED_FREQUENCE,
+	USB_TYPEC_CC_ORIENTATION,
+	USB_CID_STATUS,
+	USB_TYPEC_MODE,
+	USB_TYPEC_SINKONLY,
+	USB_OTG_VBUS_REGULATOR_ENABLE,
+	USB_VOOC_CHG_PARAM_INFO,
+	USB_VOOC_FAST_CHG_TYPE,
+	USB_DEBUG_REG,
+	USB_VOOCPHY_RESET_AGAIN,
+	USB_SUSPEND_PMIC,
+	USB_OEM_MISC_CTL,
+	USB_CCDETECT_HAPPENED,
+	USB_GET_PPS_TYPE,
+	USB_GET_PPS_STATUS,
+	USB_SET_PPS_VOLT,
+	USB_SET_PPS_CURR,
+	USB_GET_PPS_MAX_CURR,
+	USB_PPS_READ_VBAT0_VOLT,
+	USB_PPS_CHECK_BTB_TEMP,
+	USB_PPS_MOS_CTRL,
+	USB_PPS_CP_MODE_INIT,
+	USB_PPS_CHECK_AUTHENTICATE,
+	USB_PPS_GET_AUTHENTICATE,
+	USB_PPS_GET_CP_VBUS,
+	USB_PPS_GET_CP_MASTER_IBUS,
+	USB_PPS_GET_CP_SLAVE_IBUS,
+	USB_PPS_MOS_SLAVE_CTRL,
+	USB_PPS_GET_R_COOL_DOWN,
+	USB_PPS_GET_DISCONNECT_STATUS,
+	USB_PPS_VOOCPHY_ENABLE,
+	USB_IN_STATUS,
+	USB_GET_BATT_CURR,
+	USB_PPS_FORCE_SVOOC,
+	USB_PLUGIN_CNT,
+	USB_GET_PRE_IS_ABNORMAL_ADAPTER,
+	USB_GET_ABNORMAL_ADAPTER_DISCONNECT_CNT,
+	USB_SET_UFCS_START,
+	USB_SET_UFCS_VOLT,
+	USB_SET_UFCS_CURRENT,
+	USB_GET_UFCS_STATUS,
+	USB_GET_DEV_INFO_L,
+	USB_GET_DEV_INFO_H,
+	USB_SET_WD_TIME,
+	USB_GET_PDO_INFO_CURR,
+	USB_GET_PDO_INFO_VOLT,
+	USB_GET_PDO_INFO_STEP,
+	USB_SET_EXIT,
+	USB_GET_SRC_INFO_L,
+	USB_GET_SRC_INFO_H,
+	USB_SET_GET_SRC,
+#endif /*OPLUS_FEATURE_CHG_BASIC*/
+	USB_PROP_MAX,
+};
+#else
 enum usb_property_id {
 	USB_ONLINE,
 	USB_VOLT_NOW,
@@ -425,8 +554,29 @@ enum usb_property_id {
 #ifdef OPLUS_FEATURE_CHG_BASIC
 	USB_PPS_FORCE_SVOOC,
 #endif /*OPLUS_FEATURE_CHG_BASIC*/
+	USB_SCOPE,           /* <0 : when nothing is connected, 1 : OTG is connected, 2 : Charger is connected > */
+	USB_CONNECTOR_TYPE,  /* <0: TypeC 1:microUSB > */
+	USB_FLASH_ACTIVE,    /* flash status */
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	USB_SET_RERUN_AICl,
+	USB_SET_UFCS_START, /* TODO: add the following cmd to fix compile error */
+	USB_SET_UFCS_VOLT,
+	USB_SET_UFCS_CURRENT,
+	USB_GET_UFCS_STATUS,
+	USB_GET_DEV_INFO_L,
+	USB_GET_DEV_INFO_H,
+	USB_SET_WD_TIME,
+	USB_GET_PDO_INFO_CURR,
+	USB_GET_PDO_INFO_VOLT,
+	USB_GET_PDO_INFO_STEP,
+	USB_SET_EXIT,
+	USB_GET_SRC_INFO_L,
+	USB_GET_SRC_INFO_H,
+	USB_SET_GET_SRC,
+#endif /*OPLUS_FEATURE_CHG_BASIC*/
 	USB_PROP_MAX,
 };
+#endif
 
 enum wireless_property_id {
 	WLS_ONLINE,
@@ -449,6 +599,10 @@ enum {
 	QTI_POWER_SUPPLY_USB_TYPE_HVDCP = 0x80,
 	QTI_POWER_SUPPLY_USB_TYPE_HVDCP_3,
 	QTI_POWER_SUPPLY_USB_TYPE_HVDCP_3P5,
+};
+
+enum oplus_power_supply_usb_type {
+	POWER_SUPPLY_USB_TYPE_PD_SDP = 17,
 };
 
 enum OTG_SCHEME {
@@ -619,7 +773,12 @@ struct battery_chg_dev {
 #ifdef OPLUS_FEATURE_CHG_BASIC
 	struct oplus_chg_ic_dev		*buck_ic;
 	struct oplus_chg_ic_dev		*gauge_ic;
+	struct oplus_chg_ic_dev		*cp_ic;
+	struct oplus_chg_ic_dev		*misc_ic;
 	struct oplus_mms		*vooc_topic;
+	struct oplus_mms		*cpa_topic;
+	struct oplus_chg_ic_dev		*ufcs_ic;
+	struct oplus_impedance_node	*input_imp_node;
 	struct oplus_mms		*common_topic;
 	struct votable			*chg_disable_votable;
 #endif
@@ -636,6 +795,8 @@ struct battery_chg_dev {
 	int				curr_thermal_level;
 	int				num_thermal_levels;
 	int				charger_type;
+	int				g_icl_ma;
+	int				rerun_max;
 	atomic_t			state;
 	struct work_struct		subsys_up_work;
 	struct work_struct		usb_type_work;
@@ -671,12 +832,20 @@ struct battery_chg_dev {
 	unsigned long long 	hvdcp_detach_time;
 	bool 				hvdcp_detect_ok;
 	bool					hvdcp_disable;
+	bool				bc12_completed;
+	bool				ufcs_test_mode;
+	bool				ufcs_power_ready;
+	bool				ufcs_handshake_ok;
+	bool				ufcs_pdo_ready;
 	struct delayed_work 	hvdcp_disable_work;
+	struct delayed_work 	pd_only_check_work;
 	bool					voocphy_err_check;
 #endif
 #ifdef OPLUS_FEATURE_CHG_BASIC
 	int vchg_trig_irq;
 	struct delayed_work vchg_trig_work;
+	struct delayed_work vbus_collapse_rerun_icl_work;
+	struct delayed_work ibus_collapse_rerun_aicl_work;
 	struct delayed_work wait_wired_charge_on;
 	struct delayed_work wait_wired_charge_off;
 	struct delayed_work mcu_en_init_work;
@@ -704,6 +873,12 @@ struct battery_chg_dev {
 	struct mutex    read_buffer_lock;
 	struct completion    oem_read_ack;
 	struct oem_read_buffer_resp_msg  read_buffer_dump;
+	struct mutex    bcc_read_buffer_lock;
+	struct completion    bcc_read_ack;
+	struct oem_read_buffer_resp_msg  bcc_read_buffer_dump;
+	struct mutex	ufcs_read_buffer_lock;
+	struct completion	 ufcs_read_ack;
+	struct oplus_ap_read_ufcs_resp_msg ufcs_read_buffer_dump;
 	int otg_scheme;
 	int otg_boost_src;
 	int otg_curr_limit_max;
@@ -712,6 +887,10 @@ struct battery_chg_dev {
 	struct notifier_block	ssr_nb;
 	void		*subsys_handle;
 	int usb_in_status;
+
+	enum oplus_dpdm_switch_mode dpdm_switch_mode;
+	int read_by_reg;
+	bool ufcs_run_check_support;
 #endif
 };
 
@@ -747,5 +926,6 @@ struct qcom_pmic {
 int oplus_adsp_voocphy_get_fast_chg_type(void);
 int oplus_adsp_voocphy_enable(bool enable);
 int oplus_adsp_voocphy_reset_again(void);
+int oplus_adsp_batt_curve_current(void);
 #endif
 #endif /*__SM8450_CHARGER_H*/

@@ -18,6 +18,7 @@
 #include <linux/of_gpio.h>
 #include <linux/bitops.h>
 #include <linux/mutex.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/machine.h>
@@ -100,6 +101,7 @@ static inline void do_gettimeofday(struct timeval *tv)
         tv->tv_usec = now.tv_nsec/1000;
 }
 #endif
+
 static DEFINE_MUTEX(ra9530_i2c_access);
 
 #define RA9530_ADD_COUNT      2
@@ -2674,7 +2676,11 @@ static int ra9530_identity_check(struct oplus_ra9530_ic *chip)
 	return rc;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0))
+static int ra9530_driver_probe(struct i2c_client *client)
+#else
 static int ra9530_driver_probe(struct i2c_client *client, const struct i2c_device_id *id)
+#endif
 {
 	struct oplus_ra9530_ic	*chip = NULL;
 	int rc = 0;

@@ -92,10 +92,19 @@
 #define SC8547_IBUS_UCP_FALL_DEGLITCH_SET_10US   0
 #define SC8547_IBUS_UCP_FALL_DEGLITCH_SET_5MS    1
 
+#define SC8547A_IBUS_UCP_FALL_DEGLITCH_SET_MASK   0x30
+#define SC8547A_IBUS_UCP_FALL_DEGLITCH_SET_SHIFT  4
+#define SC8547A_IBUS_UCP_FALL_DEGLITCH_SET_10US   0
+#define SC8547A_IBUS_UCP_FALL_DEGLITCH_SET_5MS    1
+#define SC8547A_IBUS_UCP_FALL_DEGLITCH_SET_50MS   2
+#define SC8547A_IBUS_UCP_FALL_DEGLITCH_SET_100MS  3
+
 #define	SC8547_IBUS_OCP_MASK                0x0F
 #define	SC8547_IBUS_OCP_SHIFT               0
 #define	SC8547_IBUS_OCP_BASE                1200
 #define	SC8547_IBUS_OCP_LSB                 300
+
+#define	SC8547A_IBUS_OCP_MASK                SC8547_IBUS_OCP_MASK
 
 /* Register 06h */
 #define SC8547_REG_06                       0x06
@@ -312,7 +321,7 @@
 #define SC8547_PMID2OUT_OVP_FLAG_MASK       0x04
 #define SC8547_PMID2OUT_OVP_FLAG_SHIFT      2
 
-#define SC8547_PMID2OUT_UVP_STAT_MASK       0x01
+#define SC8547_PMID2OUT_UVP_STAT_MASK       0x02
 #define SC8547_PMID2OUT_UVP_STAT_SHIFT      1
 
 #define SC8547_PMID2OUT_OVP_STAT_MASK       0x01
@@ -516,6 +525,9 @@
 /* Register 20h */
 #define SC8547_REG_20                       0x20
 #define SC8547_TDIE_POL_L_MASK              0xFF
+#define SC8547_TDIE_MIN 0
+#define SC8547_TDIE_MAX 200
+
 
 /* Register 21h */
 #define SC8547_REG_21                       0x21
@@ -766,4 +778,8 @@ void sc8547_subsys_exit(void);
 int sc8547_slave_subsys_init(void);
 void sc8547_slave_subsys_exit(void);
 #endif
+struct sc8547_track_check_reg {
+	u8 addr;
+	u8 data;
+};
 #endif

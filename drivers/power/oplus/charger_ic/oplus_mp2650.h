@@ -635,6 +635,7 @@ struct chip_mp2650 {
         struct pinctrl_state    *mps_otg_en_sleep;
         struct pinctrl_state    *mps_otg_en_default;
 	atomic_t		charger_suspended;
+	struct completion 	resume_ack;
         bool                    probe_flag;
 
 	struct mutex track_upload_lock;
@@ -652,6 +653,7 @@ struct chip_mp2650 {
 	oplus_chg_track_trigger *i2c_err_load_trigger;
 	struct delayed_work i2c_err_load_trigger_work;
 	bool track_init_done;
+	bool support_icl_optimization;
 };
 
 struct oplus_chg_operations *  oplus_get_chg_ops(void);
