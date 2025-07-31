@@ -4,3 +4,4 @@
 obj-$(CONFIG_OPLUS_FEATURE_CMDLINE)     += cmdline_parser/
 obj-$(CONFIG_OPLUS_FEATURE_OPROJECT)    += oplus_project/
 obj-$(CONFIG_OPLUS_FEATURE_PROJECTINFO) +=  project_info/
+obj-$(CONFIG_BOOTLOADER_LOG)	+= misc/bootloader_log.o
