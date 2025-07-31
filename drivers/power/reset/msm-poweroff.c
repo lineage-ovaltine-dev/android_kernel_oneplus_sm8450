@@ -57,7 +57,7 @@ static struct nvmem_cell *nvmem_cell;
  * There is no API from TZ to re-enable the registers.
  * So the SDI cannot be re-enabled when it already by-passed.
  */
-static int download_mode = 0;
+static int download_mode = 1;
 static struct kobject dload_kobj;
 
 static int in_panic;
@@ -66,7 +66,7 @@ static void *dload_mode_addr;
 static bool dload_mode_enabled;
 static void *emergency_dload_mode_addr;
 
-static bool force_warm_reboot = true;
+static bool force_warm_reboot;
 
 static struct notifier_block restart_nb;
 
@@ -569,10 +569,8 @@ static int msm_restart_probe(struct platform_device *pdev)
 	if (!download_mode)
 		qcom_scm_disable_sdi();
 
-#if 0
 	force_warm_reboot = of_property_read_bool(dev->of_node,
 						"qcom,force-warm-reboot");
-#endif
 
 	return 0;
 
