@@ -46,10 +46,6 @@ obj-$(CONFIG_OPLUS_SENSOR_CONSUMER_IR_CORE) += oplus/oplus_consumer_ir/
 obj-y += oplus/boot/
 #endif /* OPLUS_FEATURE_BOOT */
 
-#ifdef OPLUS_DFR_FEATURE
-obj-y += oplus/dfr/
-#endif /* OPLUS_DFR_FEATURE */
-
 #ifdef OPLUS_FEATURE_MDMFEATURE
 obj-$(CONFIG_OPLUS_FEATURE_MDMFEATURE)     += oplus/mdmfeature/
 #endif /*OPLUS_FEATURE_MDMFEATURE*/
