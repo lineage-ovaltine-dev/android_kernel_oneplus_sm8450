@@ -52,7 +52,7 @@ static long ftrace_size = -1;
 module_param(ftrace_size, long, 0400);
 MODULE_PARM_DESC(ftrace_size, "ftrace size in kbytes");
 
-static bool best_effort;
+static bool best_effort = true;
 module_param(best_effort, bool, 0400);
 MODULE_PARM_DESC(best_effort, "use best effort to write (i.e. do not require storage driver pstore support, default: off)");
 
