@@ -155,7 +155,7 @@ static inline struct gpio_chip *oplus_gpio_to_chip(unsigned gpio)
 #define SUPER_EDNURANCE_MODE_VOLT_COUNT_DEFAULT 100
 #define SUPER_EDNURANCE_MODE_VOLT_SOC_1_DEFAULT 3110
 
-int enable_charger_log = 2;
+int enable_charger_log = 0;
 int charger_abnormal_log = 0;
 int tbatt_pwroff_enable = 1;
 static int mcu_status = 0;
@@ -1401,6 +1401,7 @@ static ssize_t chg_log_write(struct file *filp, const char __user *buff, size_t 
 		charger_xlog_printk(CHG_LOG_CRTI, "Disable battery driver log system\n");
 		enable_charger_log = 0;
 	}
+	enable_charger_log = 0;
 	return len;
 }
 
@@ -1409,6 +1410,7 @@ static ssize_t chg_log_read(struct file *filp, char __user *buff, size_t count, 
 	char page[256] = { 0 };
 	char read_data[32] = { 0 };
 	int len = 0;
+	enable_charger_log = 0;
 
 	if (enable_charger_log == 1) {
 		read_data[0] = '1';
