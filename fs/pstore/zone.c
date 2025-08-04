@@ -22,6 +22,11 @@
 #include <linux/writeback.h>
 #include "internal.h"
 
+#undef pr_debug
+
+#define pr_debug(fmt, ...) \
+	pr_info(fmt, ##__VA_ARGS__)
+
 /**
  * struct psz_head - header of zone to flush to storage
  *
@@ -404,7 +409,7 @@ static int psz_kmsg_recover_meta(struct psz_context *cxt)
 		}
 
 		if (buf->sig != zone->buffer->sig) {
-			pr_debug("no valid data in kmsg dump zone %lu\n", i);
+			//pr_debug("no valid data in kmsg dump zone %lu\n", i);
 			continue;
 		}
 
@@ -506,7 +511,7 @@ static int psz_recover_zone(struct psz_context *cxt, struct pstore_zone *zone)
 	}
 
 	if (tmpbuf.sig != zone->buffer->sig) {
-		pr_debug("no valid data in zone %s\n", zone->name);
+		//pr_debug("no valid data in zone %s\n", zone->name);
 		return 0;
 	}
 
@@ -1187,8 +1192,8 @@ static struct pstore_zone *psz_init_zone(enum pstore_type_id type,
 
 	*off += size;
 
-	pr_debug("pszone %s: off 0x%llx, %zu header, %zu data\n", zone->name,
-			zone->off, sizeof(*zone->buffer), zone->buffer_size);
+	//pr_debug("pszone %s: off 0x%llx, %zu header, %zu data\n", zone->name,
+	//		zone->off, sizeof(*zone->buffer), zone->buffer_size);
 	return zone;
 }
 
