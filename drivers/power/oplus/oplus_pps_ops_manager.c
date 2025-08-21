@@ -72,8 +72,6 @@ void oplus_get_pps_ops_name_from_dt(struct device_node *node)
 
 	strncpy(pps_ops_name, (rc ? "mcu-op10" : pps_ops_name_dt), PPS_OPS_DESC_NAME_MAX_LENTH);
 	pps_ops_name[PPS_OPS_DESC_NAME_MAX_LENTH - 1] = '\0';
-
-	chg_err("pps_ops_name: %s\n", pps_ops_name);
 }
 
 int oplus_pps_ops_register(const char *name, struct oplus_pps_operations *pps_ops)
@@ -96,7 +94,6 @@ int oplus_pps_ops_register(const char *name, struct oplus_pps_operations *pps_op
 			list_add_tail(&oplus_pps_ops_desc_new->list, &g_oplus_pps_ops_mg_data.pps_ops_list_head);
 			spin_unlock(&g_oplus_pps_ops_mg_data.pps_ops_list_lock);
 
-			chg_err("->name: %s\n", oplus_pps_ops_desc_new->name);
 			return 0;
 		}
 	}
@@ -129,7 +126,6 @@ struct oplus_pps_operations *oplus_pps_ops_get(void)
 
 	pps_ops_desc = oplus_pps_ops_desc_get(g_oplus_pps_ops_mg_data.pps_ops_name);
 	if (pps_ops_desc != NULL) {
-		chg_err("name: %s\n", g_oplus_pps_ops_mg_data.pps_ops_name);
 		return pps_ops_desc->pps_ops;
 	}
 
@@ -138,6 +134,5 @@ struct oplus_pps_operations *oplus_pps_ops_get(void)
 
 char *oplus_pps_ops_name_get(void)
 {
-	chg_err("oplus_pps_ops_name_get: %s\n", g_oplus_pps_ops_mg_data.pps_ops_name);
 	return g_oplus_pps_ops_mg_data.pps_ops_name;
 }

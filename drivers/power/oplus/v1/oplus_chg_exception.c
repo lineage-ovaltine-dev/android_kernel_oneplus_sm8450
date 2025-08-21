@@ -307,16 +307,13 @@ int chg_exception_report(void *chg_exception_data, int type_reason, int flag_rea
 	if ((!exception_data) || (!summary))
 		return ret;
 
-	chg_info("reason: %s, receive type:%d, flag:%d,for olc type\n", (char *)summary, type_reason, flag_reason);
 	excep_chgye = oplus_chg_olc_get_excep_reason(type_reason, flag_reason, &type_diff);
 	if (excep_chgye < 0) {
-		chg_err("error olc exception tyep\n");
 		return ret;
 	}
 
 	should_upload = oplus_chg_olc_check_type_reason(exception_data, type_reason, type_diff);
 	if (should_upload == false) {
-		chg_err("not allow upload olc type\n");
 		return ret;
 	}
 

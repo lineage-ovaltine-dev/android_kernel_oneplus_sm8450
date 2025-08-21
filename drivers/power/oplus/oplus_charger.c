@@ -3412,7 +3412,6 @@ static int oplus_chg_track_upload_vbatt_diff_over_info(struct oplus_chg_chip *ch
 		index += snprintf(&(chip->vbatt_diff_over_load_trigger.crux_info[index]),
 				  OPLUS_CHG_TRACK_CURX_INFO_LEN - index, "$$vdiff_type@@shutdown");
 	schedule_delayed_work(&chip->vbatt_diff_over_load_trigger_work, 0);
-	chg_err("%s\n", chip->vbatt_diff_over_load_trigger.crux_info);
 
 	return 0;
 }
@@ -3429,7 +3428,6 @@ static int oplus_chg_track_upload_vbatt_too_low_info(struct oplus_chg_chip *chip
 			  chip->soc, chip->smooth_soc, chip->ui_soc, chip->batt_volt_max, chip->batt_volt_min);
 
 	schedule_delayed_work(&chip->vbatt_too_low_load_trigger_work, 0);
-	chg_debug("%s\n", chip->vbatt_too_low_load_trigger.crux_info);
 
 	return 0;
 }
@@ -3440,7 +3438,6 @@ static int oplus_chg_track_upload_uisoc_keep_1_t_info(struct oplus_chg_chip *chi
 	int uisoc_1_end_time;
 
 	uisoc_1_end_time = oplus_chg_get_local_time_s();
-	chg_debug("uisoc_1_end_time:%d, uisoc_1_start_time:%d\n", uisoc_1_end_time, chip->uisoc_1_start_time);
 	memset(chip->uisoc_keep_1_t_load_trigger.crux_info, 0, sizeof(chip->uisoc_keep_1_t_load_trigger.crux_info));
 	index += snprintf(&(chip->uisoc_keep_1_t_load_trigger.crux_info[index]), OPLUS_CHG_TRACK_CURX_INFO_LEN - index,
 			  "$$uisoc_keep_1_t@@%d", uisoc_1_end_time - chip->uisoc_1_start_time);
@@ -3455,7 +3452,6 @@ static int oplus_chg_track_upload_uisoc_keep_1_t_info(struct oplus_chg_chip *chi
 			  chip->batt_rm, chip->icharging, chip->charger_exist);
 
 	schedule_delayed_work(&chip->uisoc_keep_1_t_load_trigger_work, 0);
-	chg_debug("%s\n", chip->uisoc_keep_1_t_load_trigger.crux_info);
 	msleep(ENSURE_TRACK_UPLOAD_TIMES);
 
 	return 0;
@@ -4883,7 +4879,6 @@ int oplus_chg_parse_charger_dt(struct oplus_chg_chip *chip)
 	} else
 #endif
 	{
-		chg_err(" CONFIG_HIGH_TEMP_VERSION disabled\n");
 		rc = of_property_read_u32(node, "qcom,cold_bat_decidegc", &batt_cold_degree_negative);
 		if (rc < 0) {
 			chip->limits.cold_bat_decidegc = -EINVAL;
@@ -6406,8 +6401,6 @@ static void oplus_chg_set_charging_current(struct oplus_chg_chip *chip)
 			return;
 		chip->pre_charging_current = charging_current;
 	}
-	charger_xlog_printk(CHG_LOG_CRTI, "set charging current = %d\n", charging_current);
-
 	chip->charging_current = charging_current;
 	chip->chg_ops->charging_current_write_fast(charging_current);
 }
@@ -6526,12 +6519,6 @@ void oplus_chg_set_input_current_limit(struct oplus_chg_chip *chip)
 		    (chip->limits.input_current_cool_down_ma != 0)) {
 			current_limit = chip->limits.input_current_cool_down_ma;
 		}
-		chg_err("chg_ctrl_by_vooc,  \
-				led_on = %d, \
-				calling_on = %d, \
-				current_limit[%d], \
-				chip->vooc_temp_status[%d]\n",
-			chip->led_on, chip->calling_on, current_limit, chip->vooc_temp_status);
 		if (chip->chg_ops->input_current_ctrl_by_vooc_write) {
 			chip->chg_ops->input_current_ctrl_by_vooc_write(current_limit);
 			return;
@@ -6559,38 +6546,10 @@ void oplus_chg_set_input_current_limit(struct oplus_chg_chip *chip)
 		else if (chip->cool_down == SALE_MODE_COOL_DOWN_TWO)
 			current_limit = OPLUS_CHG_500_CHARGING_CURRENT;
 	}
-#ifndef CONFIG_DISABLE_OPLUS_FUNCTION
-	if ((get_eng_version() == HIGH_TEMP_AGING || oplus_is_ptcrb_version() || get_eng_version() == AGING) &&
-	    chip->charger_type != POWER_SUPPLY_TYPE_USB) {
-		chg_err(" HIGH_TEMP_AGING/AGING/FACTORY,set current_limit 2A\n");
-		if (chip->charger_type == POWER_SUPPLY_TYPE_USB_CDP)
-			current_limit = 1500;
-		else
-			current_limit = 2000;
-	}
-#endif
-
-#ifndef CONFIG_OPLUS_CHARGER_MTK
-#ifndef CONFIG_DISABLE_OPLUS_FUNCTION
-	if (get_boot_mode() == MSM_BOOT_MODE__AGING) {
-		chg_err(" MSM_BOOT_MODE__AGING,set current_limit 2A\n");
-		current_limit = 2000;
-	}
-#endif
-#endif
 
 	if (chip->limits.force_input_current_ma) {
-		chg_err("force_input_current_ma %d\n", chip->limits.force_input_current_ma);
 		current_limit = chip->limits.force_input_current_ma;
 	}
-
-	charger_xlog_printk(CHG_LOG_CRTI, " led_on = %d, \
-		current_limit = %d, \
-		led_temp_status = %d, \
-		cool_down = %d, \
-		cool_down_force_5v = %d.\n",
-			    chip->led_on, current_limit, chip->led_temp_status, chip->cool_down,
-			    chip->cool_down_force_5v);
 
 	chip->input_current_limit = current_limit;
 	chip->chg_ops->input_current_write(current_limit);
@@ -8078,10 +8037,8 @@ void oplus_chg_set_flash_led_status(bool val)
 	oplus_ufcs_stop_flash_led(val);
 	oplus_pps_stop_flash_led(val);
 	if (oplus_chg_get_voocphy_support() == AP_SINGLE_CP_VOOCPHY ||
-	    oplus_chg_get_voocphy_support() == AP_DUAL_CP_VOOCPHY) {
+	    oplus_chg_get_voocphy_support() == AP_DUAL_CP_VOOCPHY)
 		oplus_voocphy_notify(g_charger_chip->flash_led_status);
-	} else {
-	}
 }
 
 bool oplus_chg_get_flash_led_status(void)
@@ -8227,12 +8184,10 @@ static void oplus_chg_check_vooc_temp_status(struct oplus_chg_chip *chip)
 			tbat_vooc_status = VOOC_TEMP_STATUS__NORMAL;
 		}
 	}
-	chg_err("tbat_vooc_status[%d],chip->vooc_temp_status[%d] ", tbat_vooc_status, chip->vooc_temp_status);
 	if (vooc_first_set_input_current_flag == false) {
 		chip->limits.temp_little_cool_fastchg_current_ma = chip->limits.charger_current_vooc_ma_normal;
 		chip->limits.temp_normal_fastchg_current_ma = chip->limits.charger_current_vooc_ma_normal;
 		oplus_chg_set_charging_current(chip);
-		chg_err("set charger current ctrl by vooc[%d]\n", chip->limits.temp_little_cool_fastchg_current_ma);
 	}
 	if (tbat_vooc_status != chip->vooc_temp_status || vooc_first_set_input_current_flag == false) {
 		chip->limits.vooc_warm_bat_decidegc_antishake = chip->limits.vooc_warm_bat_decidegc;
@@ -9339,7 +9294,6 @@ bool oplus_check_afi_update_condition(void)
 	}
 
 	chg_fast_type = oplus_vooc_get_fast_chg_type();
-	oplus_vooc_print_log();
 
 	if (chip->charger_exist) {
 		if (chip->charger_type == POWER_SUPPLY_TYPE_UNKNOWN) {
@@ -9347,7 +9301,7 @@ bool oplus_check_afi_update_condition(void)
 		}
 
 		if (CHARGER_SUBTYPE_FASTCHG_VOOC == chg_fast_type) {
-			chg_err(" true 1: vooc\n");
+			chg_debug(" true 1: vooc\n");
 			return true;
 		} else {
 			if (chg_fast_type) {
@@ -9355,7 +9309,7 @@ bool oplus_check_afi_update_condition(void)
 				     oplus_vooc_get_fastchg_dummy_started())) {
 					if ((chip->fastchg_to_ffc == true && chip->fastchg_ffc_status) /* ffc */
 					    || chip->batt_full) { /* full */
-						chg_err(" true 2: svooc\n");
+						chg_debug(" true 2: svooc\n");
 						return true;
 					} else {
 						return false;
@@ -9363,7 +9317,6 @@ bool oplus_check_afi_update_condition(void)
 				}
 				return false;
 			} else { /* normal charger or unkown */
-				chg_err(" true 3: normal charger or others unkown\n");
 				return true;
 			}
 		}
@@ -9648,13 +9601,13 @@ static void oplus_chg_get_battery_data(struct oplus_chg_chip *chip)
 				}
 				chip->batt_volt = oplus_gauge_get_batt_mvolts();
 				if (chip->batt_volt > chip->vbatt_power_off) {
-					chg_err(" batt_mvolt[%d] > vbatt_power_off [%d], set ui_soc as 1.\n",
+					chg_debug(" batt_mvolt[%d] > vbatt_power_off [%d], set ui_soc as 1.\n",
 						chip->batt_volt, chip->vbatt_power_off);
 					chip->ui_soc = 1;
 				}
 			}
 		}
-		chg_err("[soc ui_soc soc_load smooth_soc smooth_switch] = [%d %d %d %d %d]\n", chip->soc, chip->ui_soc,
+		chg_debug("[soc ui_soc soc_load smooth_soc smooth_switch] = [%d %d %d %d %d]\n", chip->soc, chip->ui_soc,
 			chip->soc_load, chip->smooth_soc, chip->smooth_switch);
 	}
 	if (chip->charger_exist && oplus_chg_show_vooc_logo_ornot()) {
@@ -9918,8 +9871,6 @@ static void battery_notify_vbat_check(struct oplus_chg_chip *chip)
 					chip->notify_code |= 1 << NOTIFY_BAT_FULL;
 				}
 			}
-			charger_xlog_printk(CHG_LOG_CRTI, "[BATTERY] FULL,tbatt_status:%d,notify_code:%d\n",
-					    chip->tbatt_status, chip->notify_code);
 		}
 	}
 }
@@ -10054,54 +10005,46 @@ static void battery_notify_fastchg_check(struct oplus_chg_chip *chip)
 		return;
 
 	if (!chip->mmi_chg) {
-		chg_debug("mmi_chg disable chg\n");
 		return;
 	}
 
 	if (chip->non_standard_chg_switch <= 0) {
-		chg_debug("RUS switch control %d\n", chip->non_standard_chg_switch);
 		return;
 	}
 
 	if (chip->wireless_support && (oplus_chg_is_wls_present() || oplus_wpc_get_wireless_charge_start())) {
-		chg_debug("in wireless charging\n");
 		return;
 	}
 
 	if (oplus_vooc_get_fastchg_dummy_started() || !chip->fastchg_check_first_time) {
-		chg_debug("dummy started or not first time\n");
 		return;
 	}
 
 	if (chip->chg_ops->check_pdphy_ready && chip->chg_ops->check_pdphy_ready() == false) {
-		chg_debug("PD phy not ready\n");
 		return;
 	}
 
 	if (oplus_pps_get_chg_status() != PPS_NOT_SUPPORT && chip->pps_force_svooc == false) {
 		if (chip->chg_ops->oplus_chg_get_pd_type) {
 			if (chip->chg_ops->oplus_chg_get_pd_type() == PD_PPS_ACTIVE) {
-				chip->fastchg_check_first_time = false;
-				return;
-			}
+		chip->fastchg_check_first_time = false;
+		return;
+	}
 		}
 	}
 
 	if (oplus_is_pps_charging()) {
 		chip->fastchg_check_first_time = false;
-		chg_debug("PPS charging\n");
 		return;
 	}
 
 	if (oplus_is_ufcs_charging()) {
 		chip->fastchg_check_first_time = false;
-		chg_debug("ufcs charging\n");
 		return;
 	}
 
 	if (oplus_vooc_get_fast_chg_type() != 0 || oplus_vooc_get_fastchg_started() == true) {
 		chip->fastchg_check_first_time = false;
-		chg_debug("VOOC/SVOOC charging\n");
 		return;
 	}
 
@@ -10577,18 +10520,12 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 		soc_down_limit = SOC_SYNC_DOWN_RATE_15S;
 		vbatt_too_low = true;
 		vbatt_lowerthan_3300mv = true;
-		charger_xlog_printk(CHG_LOG_CRTI, "batt_volt:%d, batt_volt_min:%d, vbatt_too_low:%d\n", chip->batt_volt,
-				    chip->batt_volt_min, vbatt_too_low);
 		if (vbatt_too_low && !pre_vbatt_too_low)
 			oplus_chg_track_upload_vbatt_too_low_info(chip);
 	}
 	pre_vbatt_too_low = vbatt_too_low;
 
-	if (chip->batt_full) {
-		soc_up_limit = SOC_SYNC_UP_RATE_10S;
-	} else {
-		soc_up_limit = SOC_SYNC_UP_RATE_10S;
-	}
+	soc_up_limit = SOC_SYNC_UP_RATE_10S;
 
 #ifndef CONFIG_DISABLE_OPLUS_FUNCTION
 	if ((get_eng_version() == HIGH_TEMP_AGING || get_eng_version() == AGING || oplus_is_ptcrb_version()) &&
@@ -10646,10 +10583,6 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 			}
 		} else {
 			chip->prop_status = POWER_SUPPLY_STATUS_FULL;
-		}
-		if (chip->ui_soc != ui_soc_pre) {
-			chg_debug("full [soc ui_soc smooth_soc up_limit] = [%d %d %d %d]\n", chip->soc, chip->ui_soc,
-				  chip->smooth_soc, soc_up_limit);
 		}
 		if (pre_prop_status != chip->prop_status && chip->prop_status == POWER_SUPPLY_STATUS_FULL)
 			oplus_chg_track_upload_vbatt_diff_over_info(chip, chip->batt_volt_max, chip->batt_volt_min,
@@ -10709,27 +10642,14 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 						chip->uisoc_down_in_full = false;
 						oplus_chg_track_upload_rechg_info();
 					}
-					chg_debug(
-						"chg [soc ui_soc smooth_soc down_limit up_limit] = [%d %d %d %d %d]\n",
-						chip->soc, chip->ui_soc, chip->smooth_soc, soc_down_limit,
-						soc_up_limit);
 				}
 			}
 		}
-		if (chip->ui_soc != ui_soc_pre) {
-			chg_debug("full [soc ui_soc smooth_soc down_limit up_limit] = [%d %d %d %d %d]\n", chip->soc,
-				  chip->ui_soc, chip->smooth_soc, soc_down_limit, soc_up_limit);
-		}
-		charger_xlog_printk(CHG_LOG_CRTI,
-				    "ui_soc:%d,waiting_for_ffc:%d,fastchg_to_ffc:%d,fastchg_start:%d,chg_type=0x%x\n",
-				    chip->ui_soc, chip->waiting_for_ffc, chip->fastchg_to_ffc,
-				    oplus_vooc_get_fastchg_started(), oplus_vooc_get_fast_chg_type());
 		if (chip->ui_soc == 100 && (chip->rsd.smooth_switch_v2 || (chip->fastchg_to_ffc == false && !oplus_chg_is_wls_ffc())) &&
 		    ((oplus_vooc_get_fastchg_started() == false) ||
 		     (chip->chg_ctrl_by_vooc && oplus_vooc_get_fast_chg_type() == CHARGER_SUBTYPE_FASTCHG_VOOC)) &&
 		    (oplus_pps_get_pps_mos_started() == false) && (oplus_ufcs_get_ufcs_mos_started() == false)) {
 			if (++cnt >= 12) {
-				chg_err("force batt full when ui_soc=100\n");
 				chip->batt_full = true;
 				cnt = 0;
 				chip->in_rechging = false;
@@ -10774,11 +10694,6 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 					soc_down_count = 0;
 					chip->save_sleep_tm_sec = 0;
 				}
-
-				if (chip->ui_soc != ui_soc_pre)
-					chg_err("sleep_tm %ld %ld %ld %d %d %d %d %d %d\n", sleep_tm, soc_reduce_margin,
-						chip->save_sleep_tm_sec, chip->soc, chip->smooth_soc, chip->ui_soc,
-						ui_soc_pre, soc_down_count, soc_down_limit);
 			}
 			if (soc_down_count >= soc_down_limit && (chip->smooth_soc < chip->ui_soc || vbatt_too_low)) {
 				chip->save_sleep_tm_sec = 0;
@@ -10961,10 +10876,6 @@ int oplus_enforce_chg_up_limit_result(struct oplus_chg_chip *chip, bool cut_off_
 void monitor_ui_soc_to_enable_chg_up_limit(struct oplus_chg_chip *chip)
 {
 	static int over_count = 0;
-
-	chg_info("monitor_ui_soc_to_enable_chg_up_limit: charge_limit_enable=%d, ui_soc=%d %d %d %d",
-		chg_up_limit_data.charge_limit_enable, chip->ui_soc, chg_up_limit_data.charge_limit_value,
-		chg_up_limit_data.charge_limit_recharge_value, over_count);
 
 	if (chg_up_limit_data.charge_limit_enable == 1) {
 		if (chip->ui_soc > chg_up_limit_data.charge_limit_value) {
@@ -13656,13 +13567,8 @@ static void oplus_fg_soft_reset_work(struct work_struct *work)
 			chip->fg_soft_reset_done = false;
 			chip->fg_soft_reset_fail_cnt++;
 		}
-		chip->fg_check_ibat_cnt = 0;
-	} else {
-		chip->fg_check_ibat_cnt = 0;
 	}
-
-	chg_err("reset_done [%s] ibat_cnt[%d] fail_cnt[%d] \n", chip->fg_soft_reset_done == true ? "true" : "false",
-		chip->fg_check_ibat_cnt, chip->fg_soft_reset_fail_cnt);
+	chip->fg_check_ibat_cnt = 0;
 }
 
 int oplus_plc_based_buck_setting(struct oplus_chg_chip *chip, int enable)
@@ -14207,7 +14113,6 @@ int oplus_chg_show_vooc_logo_ornot(void)
 			charger_xlog_printk(CHG_LOG_CRTI, "PPS not start use PD,fastchg return 0\n");
 			return 0;
 		}
-		chg_info("keep_connect_check:%d!", oplus_quirks_keep_connect_status());
 		return oplus_quirks_keep_connect_status();
 	} else {
 		return 0;
@@ -14735,7 +14640,6 @@ int oplus_chg_get_shell_temp(void)
 	if (IS_ERR_OR_NULL(g_charger_chip->shell_themal)) {
 		g_charger_chip->shell_themal = thermal_zone_get_zone_by_name("shell_back");
 		if (IS_ERR_OR_NULL(g_charger_chip->shell_themal)) {
-			chg_err("Can't get shell_back\n");
 			return g_charger_chip->shell_temp;
 		}
 	}
@@ -15609,7 +15513,6 @@ void oplus_chg_set_input_current_without_aicl(int current_ma)
 		if (g_charger_chip->chg_ops->input_current_write_without_aicl &&
 		    oplus_vooc_get_allow_reading() == true) {
 			g_charger_chip->chg_ops->input_current_write_without_aicl(current_ma);
-			chg_err("current_ma[%d]\n", current_ma);
 		}
 	}
 }

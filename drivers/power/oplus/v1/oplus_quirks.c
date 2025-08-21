@@ -64,7 +64,6 @@ int oplus_get_quirks_plug_status(int type) {
 		return 0;
 
 	mask = 1 << type;
-	chg_err(":%d, mask:%d\n", chip->quirks_plugin_status, (chip->quirks_plugin_status & mask) >> type);
 	return (chip->quirks_plugin_status & mask) >> type;
 }
 

@@ -5231,7 +5231,6 @@ static int oplus_chg_track_cal_app_stats(
 	if (strcmp(track_status->app_status.pre_top_name,
 	    track_status->app_status.curr_top_name) || chg_end ||
 	    (track_status->led_on && !chip->led_on)) {
-		pr_info("!!!app change or chg_end or led change, need update\n");
 		if (chip->led_on ||  (track_status->led_on && !chip->led_on)) {
 			if (track_status->app_status.curr_top_index <
 			   (ARRAY_SIZE(app_table) - 1))
@@ -5254,11 +5253,6 @@ static int oplus_chg_track_cal_app_stats(
 	if (!chip->charger_exist || track_status->chg_report_full_time) {
 		track_status->app_status.app_cal = true;
 	}
-
-	pr_debug("ch_t:%d, app_cal:%d, curr_top_index:%d, curr_top_name:%s\n",
-		track_status->app_status.change_t, track_status->app_status.app_cal,
-		track_status->app_status.curr_top_index,
-		track_status->app_status.curr_top_name);
 	return 0;
 }
 
