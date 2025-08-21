@@ -37,17 +37,14 @@ static struct oplus_chg_ops_desc *oplus_chg_ops_desc_get(const char *name)
 	struct oplus_chg_ops_desc *loopup = NULL, *element = NULL;
 
 	if (list_empty(&g_oplus_chg_ops_mg_data.chg_ops_list_head)) {
-		chg_err("chg_ops_list_head list_empty\n");
 		return NULL;
 	}
 
 	spin_lock(&g_oplus_chg_ops_mg_data.chg_ops_list_lock);
 	list_for_each (pos, &g_oplus_chg_ops_mg_data.chg_ops_list_head) {
 		element = list_entry(pos, struct oplus_chg_ops_desc, list);
-		chg_err("members->name: %s\n", element->name);
 		if (!strncmp(name, element->name, CHG_OPS_DESC_NAME_MAX_LENTH)) {
 			loopup = element;
-			chg_err("name: %s\n", name);
 			break;
 		}
 	}
@@ -66,8 +63,6 @@ void oplus_get_chg_ops_name_from_dt(struct device_node *node)
 
 	strncpy(chg_ops_name, (rc ? "plat-pmic" : chg_ops_name_dt), CHG_OPS_DESC_NAME_MAX_LENTH);
 	chg_ops_name[CHG_OPS_DESC_NAME_MAX_LENTH - 1] = '\0';
-
-	chg_err("chg_ops_name: %s\n", chg_ops_name);
 }
 
 int oplus_chg_ops_register(const char *name, struct oplus_chg_operations *chg_ops)
@@ -90,7 +85,6 @@ int oplus_chg_ops_register(const char *name, struct oplus_chg_operations *chg_op
 			list_add_tail(&oplus_chg_ops_desc_new->list, &g_oplus_chg_ops_mg_data.chg_ops_list_head);
 			spin_unlock(&g_oplus_chg_ops_mg_data.chg_ops_list_lock);
 
-			chg_err("->name: %s\n", oplus_chg_ops_desc_new->name);
 			return 0;
 		}
 	}
@@ -123,7 +117,6 @@ struct oplus_chg_operations *oplus_chg_ops_get(void)
 
 	chg_ops_desc = oplus_chg_ops_desc_get(g_oplus_chg_ops_mg_data.chg_ops_name);
 	if (chg_ops_desc != NULL) {
-		chg_err("name: %s\n", g_oplus_chg_ops_mg_data.chg_ops_name);
 		return chg_ops_desc->chg_ops;
 	}
 

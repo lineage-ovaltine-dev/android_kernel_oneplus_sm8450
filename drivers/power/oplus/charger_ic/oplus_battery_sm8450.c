@@ -2206,7 +2206,6 @@ static void handle_notification(struct battery_chg_dev *bcdev, void *data,
 		schedule_delayed_work(&bcdev->typec_state_change_work, 0);
 		break;
 	case BC_PLUGIN_IRQ:
-		printk(KERN_ERR "!!!!!oplus_plugin_irq_work\n");
 		schedule_delayed_work(&bcdev->plugin_irq_work, 0);
 		break;
 	case BC_APSD_DONE:
@@ -6427,7 +6426,7 @@ static int oplus_usbtemp_monitor_main(void *data)
 	struct oplus_chg_chip *chip = g_oplus_chip;
 	static int log_count = 0;
 
-	pr_err("[oplus_usbtemp_monitor_main]:run first!");
+	pr_debug("[oplus_usbtemp_monitor_main]:run first!");
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(chip->oplus_usbtemp_wq, chip->usbtemp_check == true);
@@ -6587,8 +6586,6 @@ static int oplus_usbtemp_monitor_main(void *data)
 		msleep(delay);
 		log_count++;
 		if (log_count == 40) {
-			chg_err("==================usbtemp_volt_l[%d], usb_temp_l[%d], usbtemp_volt_r[%d], usb_temp_r[%d]\n",
-					chip->usbtemp_volt_l, chip->usb_temp_l, chip->usbtemp_volt_r, chip->usb_temp_r);
 			log_count = 0;
 		}
 	}
@@ -7097,7 +7094,7 @@ static int oplus_usbtemp_monitor_main_new_method(void *data)
 	curr_range_change_first_time.tv_sec = 0;
 	curr_range_change_last_time.tv_sec = 0;
 
-	pr_err("[oplus_usbtemp_monitor_main_new_method]:run first!");
+	pr_debug("[oplus_usbtemp_monitor_main_new_method]:run first!");
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(chip->oplus_usbtemp_wq_new_method, chip->usbtemp_check == true);
@@ -7513,7 +7510,7 @@ static void dump_regs(void)
 		dump_count = 0;
 
 		if (oplus_chg_get_voocphy_support() == ADSP_VOOCPHY) {
-			printk(KERN_ERR "sm8450_st_dump: [chg_en=%d, suspend=%d, pd_svooc=%d, subtype=0x%02x],"
+			pr_debug("sm8450_st_dump: [chg_en=%d, suspend=%d, pd_svooc=%d, subtype=0x%02x],"
 				"[oplus_UsbCommCapable=%d, oplus_pd_svooc=%d, typec_mode=%d, cid_status=0x%02x, usb_in_status=%d],"
 				"[0x%4x=0x%02x, 0x%4x=0x%02x, 0x%4x=0x%02x, 0x%4x=0x%02x], "
 				"[0x%4x=0x%02x, 0x%4x=0x%02x, 0x%4x=0x%02x, 0x%4x=0x%02x], "
@@ -7637,8 +7634,6 @@ static int smbchg_set_fastchg_current_raw(int current_ma)
 	rc = write_property_id(bcdev, pst, prop_id, current_ma * 1000);
 	if (rc)
 		chg_err("set fcc to %d mA fail, rc=%d\n", current_ma, rc);
-	else
-		chg_err("set fcc to %d mA\n", current_ma);
 
 	return rc;
 }
@@ -7673,7 +7668,6 @@ static int smbchg_set_wls_boost_en(bool enable)
 bool qpnp_get_prop_vbus_collapse_status(void)
 {
 	int rc = 0;
-	bool collapse_status = false;
 	struct battery_chg_dev *bcdev = NULL;
 	struct psy_state *pst = NULL;
 	struct oplus_chg_chip *chip = g_oplus_chip;
@@ -7685,14 +7679,11 @@ bool qpnp_get_prop_vbus_collapse_status(void)
 	pst = &bcdev->psy_list[PSY_TYPE_USB];
 
 	rc = read_property_id(bcdev, pst, USB_VBUS_COLLAPSE_STATUS);
-	if (rc < 0) {
+	if (rc) {
 		chg_err("read usb vbus_collapse_status fail, rc=%d\n", rc);
 		return false;
 	}
-	collapse_status = pst->prop[USB_VBUS_COLLAPSE_STATUS];
-	chg_err("read usb vbus_collapse_status[%d]\n",
-			collapse_status);
-	return collapse_status;
+	return pst->prop[USB_VBUS_COLLAPSE_STATUS];
 }
 
 static int usb_icl[] = {
@@ -7716,7 +7707,6 @@ static int oplus_get_max_current_from_first_fixed_pdo(void)
 		return -1;
 	}
 	if (!bcdev->common_charge_icl_support) {
-		chg_err("get common-charge-icl-support == 0\n");
 		return -1;
 	}
 	pps_read_buffer(bcdev);
@@ -7743,12 +7733,8 @@ static int oplus_pd_set_aicr(int current_ma, bool en)
 		chg_err("chip is NULL!\n");
 		return -1;
 	}
-	chg_err("current_ma = %d", current_ma);
 	chip->pd_curr_max = current_ma;
-	if (en)
-		return oplus_chg_set_input_current(chip->pd_curr_max);
-	else
-		return 0;
+	return en ? oplus_chg_set_input_current(chip->pd_curr_max) : 0;
 }
 
 static void oplus_chg_pd_set_aicl(void)
@@ -7806,21 +7792,16 @@ static int oplus_chg_set_input_current_with_no_aicl(int current_ma)
 	prop_id = get_property_id(pst, POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT);
 
 	max_pdo_current = oplus_get_max_current_from_first_fixed_pdo();
-	chg_err("max_pdo_current = %d\n", max_pdo_current);
 	if (max_pdo_current >= 0 && max_pdo_current < usb_icl[0]) {
 		rc = write_property_id(bcdev, pst, prop_id, max_pdo_current * 1000);
 		if (rc)
 			chg_err("set icl to %d mA fail, rc=%d\n", max_pdo_current, rc);
-		else
-			chg_err("set icl to %d mA\n", max_pdo_current);
 		return rc;
 	}
 
 	rc = write_property_id(bcdev, pst, prop_id, current_ma * 1000);
 	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", current_ma, rc);
-	else
-		chg_err("set icl to %d mA\n", current_ma);
 
 	return rc;
 }
@@ -7884,41 +7865,29 @@ static int oplus_chg_set_input_current(int current_ma)
 	pst = &bcdev->psy_list[PSY_TYPE_USB];
 	prop_id = get_property_id(pst, POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT);
 
-	chg_debug("usb input max current limit=%d setting %02x\n", current_ma, i);
-
 	chg_vol = qpnp_get_prop_charger_voltage_now();
 	if (chg_vol > AICL_POINT_VOL_9V) {
 		aicl_point = AICL_POINT_VOL_9V;
 	} else {
 		if (chip->batt_volt > 4100) {
 			aicl_point = 4550;
-		} else {
-			aicl_point = 4500;
 		}
 	}
 
 	max_pdo_current = oplus_get_max_current_from_first_fixed_pdo();
-	chg_err("max_pdo_current = %d\n", max_pdo_current);
 	if (max_pdo_current >= 0 && max_pdo_current < usb_icl[0]) {
 		rc = write_property_id(bcdev, pst, prop_id, max_pdo_current * 1000);
-		if (rc) {
+		if (rc)
 			chg_err("set pd icl to %d mA fail, rc=%d\n", max_pdo_current, rc);
-		} else {
-			chg_err("set pd icl to %d mA\n", max_pdo_current);
-		}
 		goto aicl_return;
 	}
 
 	if (max_pdo_current > 0)
 		current_ma = min(current_ma, chip->pd_curr_max);
-	chg_err("current_ma = %d\n", current_ma);
 
 	rc = write_property_id(bcdev, pst, prop_id, DEFAULT_CURR_BY_CC * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to 100 mA fail");
-	} else {
-		chg_err("set icl to 100 mA first\n");
-	}
 	usleep_range(25000, 26000);
 
 	if (current_ma < 500) {
@@ -7928,11 +7897,8 @@ static int oplus_chg_set_input_current(int current_ma)
 
 	i = 1; /* 500 */
 	rc = write_property_id(bcdev, pst, prop_id, usb_icl[i] * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", usb_icl[i], rc);
-	} else {
-		chg_err("set icl to %d mA\n", usb_icl[i]);
-	}
 	usleep_range(50000, 51000);
 	if (qpnp_get_prop_vbus_collapse_status() == true) {
 		chg_debug("use 500 here\n");
@@ -7947,11 +7913,8 @@ static int oplus_chg_set_input_current(int current_ma)
 
 	i = 2; /* 900 */
 	rc = write_property_id(bcdev, pst, prop_id, usb_icl[i] * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", usb_icl[i], rc);
-	} else {
-		chg_err("set icl to %d mA\n", usb_icl[i]);
-	}
 	usleep_range(50000, 51000);
 	if (qpnp_get_prop_vbus_collapse_status() == true) {
 		i = i - 1;
@@ -7966,11 +7929,8 @@ static int oplus_chg_set_input_current(int current_ma)
 
 	i = 3; /* 1200 */
 	rc = write_property_id(bcdev, pst, prop_id, usb_icl[i] * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", usb_icl[i], rc);
-	} else {
-		chg_err("set icl to %d mA\n", usb_icl[i]);
-	}
 	usleep_range(90000, 91000);
 	if (qpnp_get_prop_vbus_collapse_status() == true) {
 		i = i - 1;
@@ -7984,11 +7944,8 @@ static int oplus_chg_set_input_current(int current_ma)
 
 	i = 4; /* 1350 */
 	rc = write_property_id(bcdev, pst, prop_id, usb_icl[i] * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", usb_icl[i], rc);
-	} else {
-		chg_err("set icl to %d mA\n", usb_icl[i]);
-	}
 	usleep_range(130000, 131000);
 	if (qpnp_get_prop_vbus_collapse_status() == true) {
 		i = i - 2;
@@ -8002,11 +7959,8 @@ static int oplus_chg_set_input_current(int current_ma)
 
 	i = 5; /* 1500 */
 	rc = write_property_id(bcdev, pst, prop_id, usb_icl[i] * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", usb_icl[i], rc);
-	} else {
-		chg_err("set icl to %d mA\n", usb_icl[i]);
-	}
 	usleep_range(90000, 91000);
 	if (qpnp_get_prop_vbus_collapse_status() == true) {
 		i = i - 3;
@@ -8024,11 +7978,8 @@ static int oplus_chg_set_input_current(int current_ma)
 
 	i = 6; /* 1750 */
 	rc = write_property_id(bcdev, pst, prop_id, usb_icl[i] * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", usb_icl[i], rc);
-	} else {
-		chg_err("set icl to %d mA\n", usb_icl[i]);
-	}
 	usleep_range(50000, 51000);
 	if (qpnp_get_prop_vbus_collapse_status() == true) {
 		i = i - 3;
@@ -8042,11 +7993,8 @@ static int oplus_chg_set_input_current(int current_ma)
 
 	i = 7; /* 2000 */
 	rc = write_property_id(bcdev, pst, prop_id, usb_icl[i] * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", usb_icl[i], rc);
-	} else {
-		chg_err("set icl to %d mA\n", usb_icl[i]);
-	}
 	usleep_range(50000, 51000);
 	if (qpnp_get_prop_vbus_collapse_status() == true) {
 		i = i - 2;
@@ -8061,11 +8009,8 @@ static int oplus_chg_set_input_current(int current_ma)
 
 	i = 8; /* 3000 */
 	rc = write_property_id(bcdev, pst, prop_id, usb_icl[i] * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", usb_icl[i], rc);
-	} else {
-		chg_err("set icl to %d mA\n", usb_icl[i]);
-	}
 	usleep_range(90000, 91000);
 	if (qpnp_get_prop_vbus_collapse_status() == true) {
 		i = i - 1;
@@ -8080,11 +8025,8 @@ static int oplus_chg_set_input_current(int current_ma)
 
 aicl_pre_step:
 	rc = write_property_id(bcdev, pst, prop_id, usb_icl[i] * 1000);
-	if (rc) {
+	if (rc)
 		chg_err("set icl to %d mA fail, rc=%d\n", usb_icl[i], rc);
-	} else {
-		chg_err("set icl to %d mA\n", usb_icl[i]);
-	}
 	if ((chip->charger_type == POWER_SUPPLY_TYPE_USB_DCP &&
 	    current_ma >= OPLUS_CHG_TRACK_ICL_MONITOR_THD_MA &&
 	    usb_icl[i] < OPLUS_CHG_TRACK_ICL_MONITOR_THD_MA) ||
@@ -8195,10 +8137,6 @@ static int oplus_ap_init_adsp_gague(void)
 	pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
 
 	rc = write_property_id(bcdev, pst, BATT_ADSP_GAUGE_INIT, 1);
-	if (rc)
-		chg_err("init adsp gague fail, rc=%d\n", rc);
-	else
-		chg_err("init adsp gague sucess.");
 
 	return rc;
 }
@@ -9682,7 +9620,7 @@ int oplus_chg_get_shutdown_soc(void)
 		chg_err("read battery rtc soc fail, rc=%d\n", rc);
 		return 0;
 	}
-	chg_err("read battery rtc soc success, rtc_soc=%d\n", pst->prop[BATT_RTC_SOC]);
+	chg_debug("read battery rtc soc success, rtc_soc=%d\n", pst->prop[BATT_RTC_SOC]);
 
 	return pst->prop[BATT_RTC_SOC];
 }
@@ -9706,7 +9644,7 @@ int oplus_chg_backup_soc(int backup_soc)
 		chg_err("set battery rtc soc fail, rc=%d\n", rc);
 		return 0;
 	}
-	chg_err("write battery rtc soc success, rtc_soc=%d\n", backup_soc);
+	chg_debug("write battery rtc soc success, rtc_soc=%d\n", backup_soc);
 
 	return 0;
 }
@@ -9878,11 +9816,7 @@ int oplus_sm8150_get_pd_type(void)
 	struct psy_state *pst = NULL;
 	struct oplus_chg_chip *chip = g_oplus_chip;
 
-	if (!chip) {
-		return false;
-	}
-
-	if (!chip->charger_exist) {
+	if (!chip || !chip->charger_exist) {
 		return false;
 	}
 
@@ -9897,7 +9831,6 @@ int oplus_sm8150_get_pd_type(void)
 			is_pd_type = 0;
 		return is_pd_type;
 	}
-	chg_err("oplus_sm8150_get_pd_type, pst->prop[prop_id]=%d\n", pst->prop[prop_id]);
 	switch (pst->prop[prop_id]) {
 		case POWER_SUPPLY_USB_TYPE_PD:
 		case POWER_SUPPLY_USB_TYPE_PD_DRP:
@@ -10368,13 +10301,15 @@ static int oplus_input_current_limit_ctrl_by_vooc_write(int current_ma)
 		for (temp_curr = cur_usb_icl; temp_curr < current_ma; temp_curr += 500) {
 			msleep(35);
 			rc = oplus_chg_set_input_current_with_no_aicl(temp_curr);
-			chg_err("[up] set input_current = %d\n", temp_curr);
+			if (rc)
+				chg_err("[up] set input_current = %d\n", temp_curr);
 		}
 	} else {
 		for (temp_curr = cur_usb_icl; temp_curr > current_ma; temp_curr -= 500) {
 			msleep(35);
 			rc = oplus_chg_set_input_current_with_no_aicl(temp_curr);
-			chg_err("[down] set input_current = %d\n", temp_curr);
+			if (rc)
+				chg_err("[down] set input_current = %d\n", temp_curr);
 		}
 	}
 
@@ -11006,13 +10941,8 @@ static bool fg_zy0603_check_rc_sfr(void)
 		chg_err("read sfr fail, rc=%d\n", rc);
 		return false;
 	}
-	chg_err("read sfr success, sfr err=%d\n", pst->prop[BATT_ZY0603_CHECK_RC_SFR]);
 
-	if(pst->prop[BATT_ZY0603_CHECK_RC_SFR]) {
-		return true;
-	} else {
-		return false;
-	}
+	return pst->prop[BATT_ZY0603_CHECK_RC_SFR];
 }
 
 static int fg_zy0603_soft_reset(void)
@@ -11052,16 +10982,11 @@ static bool fg_zy0603_get_afi_update_done(void)
 	pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
 
 	rc = read_property_id(bcdev, pst, BATT_AFI_UPDATE_DONE);
-	if (rc < 0) {
+	if (rc) {
 		chg_err("read afi update fail, rc=%d\n", rc);
 		return false;
 	}
-	chg_err("read afi update success, afi update done=%d\n", pst->prop[BATT_AFI_UPDATE_DONE]);
-	if(pst->prop[BATT_AFI_UPDATE_DONE]) {
-		return true;
-	} else {
-		return false;
-	}
+	return pst->prop[BATT_AFI_UPDATE_DONE];
 }
 
 static int fg_bq28z610_get_battery_balancing_status(void)

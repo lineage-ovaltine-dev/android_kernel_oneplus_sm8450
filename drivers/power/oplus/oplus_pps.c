@@ -500,17 +500,13 @@ static int oplus_pps_parse_charge_strategy(struct oplus_pps_chip *chip)
 	if (rc || chip->pps_support_type == 0) {
 		chip->pps_support_type = 0;
 		return -ENODEV;
-	} else {
-		pps_err("oplus,pps_support_type is %d\n", chip->pps_support_type);
 	}
 
 	rc = of_property_read_u32(node, "oplus,pps_support_third", &chip->pps_support_third);
 	if (rc) {
 		chip->pps_support_third = false;
 	} else {
-		pps_err("oplus,pps_support_third is %d\n", chip->pps_support_third);
 		chip->pps_support_third = third_pps_supported_from_nvid() ? chip->pps_support_third : 0;
-		pps_err("chip->pps_support_third=%d\n", chip->pps_support_third);
 	}
 
 	rc = of_property_read_u32(node, "oplus,pps_warm_allow_vol", &chip->limits.pps_warm_allow_vol);
@@ -904,11 +900,10 @@ static int oplus_pps_parse_resistense_strategy(struct oplus_pps_chip *chip)
 static int oplus_pps_parse_batt_curves_third(struct oplus_pps_chip *chip)
 {
 	struct device_node *node, *pps_node, *soc_node;
-	int rc = 0, i, j, k, length;
+	int rc = 0, i, j, length;
 
-	if (!chip || !chip->pps_support_type) {
+	if (!chip || !chip->pps_support_type)
 		return -ENODEV;
-	}
 
 	node = chip->dev->of_node;
 
@@ -973,18 +968,6 @@ static int oplus_pps_parse_batt_curves_third(struct oplus_pps_chip *chip)
 		}
 	}
 
-	for (i = 0; i < chip->limits.pps_strategy_soc_num - 1; i++) {
-		for (j = 0; j < chip->limits.pps_strategy_temp_num - 1; j++) {
-			for (k = 0; k < chip->batt_curves_third_soc[i].batt_curves_temp[j].batt_curve_num; k++) {
-				pps_err("third : i=%d,j=%d %d %d %d %d %d\n", i, j,
-					chip->batt_curves_third_soc[i].batt_curves_temp[j].batt_curves[k].target_vbus,
-					chip->batt_curves_third_soc[i].batt_curves_temp[j].batt_curves[k].target_vbat,
-					chip->batt_curves_third_soc[i].batt_curves_temp[j].batt_curves[k].target_ibus,
-					chip->batt_curves_third_soc[i].batt_curves_temp[j].batt_curves[k].exit,
-					chip->batt_curves_third_soc[i].batt_curves_temp[j].batt_curves[k].target_time);
-			}
-		}
-	}
 
 	return rc;
 }
@@ -992,11 +975,10 @@ static int oplus_pps_parse_batt_curves_third(struct oplus_pps_chip *chip)
 static int oplus_pps_parse_low_curr_full_curves(struct oplus_pps_chip *chip)
 {
 	struct device_node *node, *full_node;
-	int rc = 0, i, j, length;
+	int rc = 0, i, length;
 
-	if (!chip || !chip->pps_support_type) {
+	if (!chip || !chip->pps_support_type)
 		return -ENODEV;
-	}
 
 	node = chip->dev->of_node;
 
@@ -1036,24 +1018,17 @@ static int oplus_pps_parse_low_curr_full_curves(struct oplus_pps_chip *chip)
 		}
 	}
 
-	for (i = 0; i < PPS_LOW_CURR_FULL_CURVE_TEMP_MAX; i++) {
-		for (j = 0; j < chip->low_curr_full_curves_temp[i].full_curve_num; j++) {
-			pps_err(": i = %d,  %d %d %d\n", i, chip->low_curr_full_curves_temp[i].full_curves[j].iterm,
-				chip->low_curr_full_curves_temp[i].full_curves[j].vterm,
-				chip->low_curr_full_curves_temp[i].full_curves[j].exit);
-		}
-	}
 	return rc;
 }
 
 static int oplus_pps_parse_batt_curves_oplus(struct oplus_pps_chip *chip)
 {
 	struct device_node *node, *pps_node, *soc_node;
-	int rc = 0, i, j, k, length;
+	int rc = 0, i, j, length;
 
-	if (!chip || !chip->pps_support_type) {
+	if (!chip || !chip->pps_support_type)
 		return -ENODEV;
-	}
+
 	node = chip->dev->of_node;
 
 	pps_node = of_get_child_by_name(node, "pps_charge_oplus_strategy");
@@ -1120,18 +1095,6 @@ static int oplus_pps_parse_batt_curves_oplus(struct oplus_pps_chip *chip)
 		}
 	}
 
-	for (i = 0; i < chip->limits.pps_strategy_soc_num - 1; i++) {
-		for (j = 0; j < chip->limits.pps_strategy_temp_num - 1; j++) {
-			for (k = 0; k < chip->batt_curves_oplus_soc[i].batt_curves_temp[j].batt_curve_num; k++) {
-				pps_err(":oplus i = %d,j = %d  %d %d %d %d %d\n", i, j,
-					chip->batt_curves_oplus_soc[i].batt_curves_temp[j].batt_curves[k].target_vbus,
-					chip->batt_curves_oplus_soc[i].batt_curves_temp[j].batt_curves[k].target_vbat,
-					chip->batt_curves_oplus_soc[i].batt_curves_temp[j].batt_curves[k].target_ibus,
-					chip->batt_curves_oplus_soc[i].batt_curves_temp[j].batt_curves[k].exit,
-					chip->batt_curves_oplus_soc[i].batt_curves_temp[j].batt_curves[k].target_time);
-			}
-		}
-	}
 
 	return rc;
 }

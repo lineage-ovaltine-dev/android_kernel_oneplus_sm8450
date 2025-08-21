@@ -667,7 +667,7 @@ int oplus_usbtemp_monitor_common(void *data)
 	if (chip->usbtemp_temp_up_time_thr <= 0) {
 		chip->usbtemp_temp_up_time_thr = 30;
 	}
-	pr_err("[%s]:run first chip->usbtemp_max_temp_thr[%d], chip->usbtemp_temp_up_time_thr[%d]!",
+	pr_debug("[%s]:run first chip->usbtemp_max_temp_thr[%d], chip->usbtemp_temp_up_time_thr[%d]!",
 		__func__, chip->usbtemp_max_temp_thr, chip->usbtemp_temp_up_time_thr);
 	while (!kthread_should_stop()) {
 		if(chip->chg_ops->oplus_usbtemp_monitor_condition != NULL){
