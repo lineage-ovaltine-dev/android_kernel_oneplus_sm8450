@@ -245,14 +245,6 @@ static bool move_normal_pmd(struct vm_area_struct *vma, unsigned long old_addr,
 		return false;
 
 	/*
-	 * We need to ensure that fast-remap is not racing with a concurrent
-	 * SPF is in progress, since a fast remap can change the vmf's pmd
-	 * and hence its ptl from under it, by moving the pmd_t entry.
-	 */
-	if (!trylock_vma_ref_count(vma))
-		return false;
-
-	/*
 	 * We don't have to worry about the ordering of src and dst
 	 * ptlocks because exclusive mmap_lock prevents deadlock.
 	 */
