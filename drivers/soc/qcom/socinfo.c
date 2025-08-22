@@ -1699,7 +1699,7 @@ static int qcom_socinfo_probe(struct platform_device *pdev)
 	socinfo = info;
 
 	qs = devm_kzalloc(&pdev->dev, sizeof(*qs), GFP_KERNEL);
-	if (!qs)
+	if (!qs->attr.soc_id || !qs->attr.revision)
 		return -ENOMEM;
 
 	qs->attr.machine = socinfo_machine(le32_to_cpu(info->id));
