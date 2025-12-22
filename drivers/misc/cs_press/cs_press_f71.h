@@ -212,8 +212,6 @@
 #define  PRESS_NUM                      10
 
 #define  NAME_MAX_LENS                  256 
-#define MIN(A, B) ((A) < (B) ? (A) : (B))
-
 #define DEFAULT_RUN_DELAY_TIME          50
 
 typedef struct{
