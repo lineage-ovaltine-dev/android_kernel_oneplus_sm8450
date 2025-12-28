@@ -67,7 +67,6 @@ qseecom-mod-$(CONFIG_COMPAT)	+= compat_qseecom.o
 obj-$(CONFIG_WIGIG_SENSING_SPI)	+= wigig_sensing.o
 
 obj-y	+= tri_state_key/
-obj-$(CONFIG_CSA37F71_SENSOR_NDT)	+= cs_press/
 
 #ifdef OPLUS_FEATURE_SIM_DETECT
 obj-$(CONFIG_SIM_DETECT)	+= sim_detect.o
@@ -78,10 +77,6 @@ obj-$(CONFIG_OEM_QMI)	+= oem_qmi_client.o
 #endif
 
 obj-$(CONFIG_OPLUS_GPIO) += oplus_gpio.o
-
-#ifdef OPLUS_FEATURE_CHG_BASIC
-obj-$(CONFIG_AW8697_HAPTIC) += aw8697_haptic/
-#endif
 
 obj-$(CONFIG_KINECTICS_XR_NORDIC) += kxrctrl/
 
