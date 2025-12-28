@@ -211,4 +211,5 @@ config GENERIC_ARCH_TOPOLOGY
 	  runtime.
 
 source "drivers/base/kernelFwUpdate/Kconfig"
+source "drivers/base/touchpanel_notify/Kconfig"
 endmenu

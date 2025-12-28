@@ -26,6 +26,7 @@ obj-$(CONFIG_GENERIC_ARCH_TOPOLOGY) += arch_topology.o
 
 obj-y			+= test/
 obj-$(CONFIG_OPLUS_FW_UPDATE)	+= kernelFwUpdate/
+obj-$(CONFIG_TOUCHPANEL_NOTIFY) += touchpanel_notify/
 
 ccflags-$(CONFIG_DEBUG_DRIVER) := -DDEBUG
 
